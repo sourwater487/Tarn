@@ -8,6 +8,12 @@ Tarn 是 Lin 的个人记忆与连续性系统，以 Markdown 记忆桶和年轮
 
 当前改进计划和验收标准见 [Tarn 记忆改进](docs/tarn-memory-evolution.md)。
 
+## 操作指南
+
+- [给 Lin 的操作指南](docs/tarn-user-guide.md)：聊天里怎么用、操作台怎么看、三类状态如何区分。
+- [给聊天模型的操作指南](docs/tarn-model-guide.md)：可上传到客户端 file 的工具使用说明。
+- [后台副 API 整理规则](resources/tarn-write-policy.txt)：系统使用的独立整理规则。
+
 本仓库基于 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 二次开发。它保留原版的记忆桶、情绪坐标、遗忘曲线、向量检索和 Dashboard，并加入了保守召回、图关系、原文检索、跨窗口 handoff、画像、自我入口、照顾备忘、Darkroom、Dream、自动写入门卫，以及 OpenAI / Anthropic 兼容 Gateway。
 
 > 这不是原版 Ombre-Brain 的无改动镜像。请使用本仓库源码部署；旧 Docker 镜像和历史 compose 文件不包含完整 fork 能力。
@@ -53,21 +59,7 @@ flowchart LR
 
 ### 2. 记忆桶
 
-每条长期记忆是带 YAML frontmatter 的 Markdown。推荐正文结构：
-
-```markdown
-### moment
-发生了什么、哪些事实以后仍有用。
-
-### original
-需要保留的原句或细节。
-
-### reflection
-AI 对这段经历的理解、关系侧学习或以后应怎样做。
-
-### affect_anchor
-只保存情绪温度、意象或和弦，不作为主题命中的证据。
-```
+每条长期记忆是带 YAML frontmatter 的 Markdown。短记忆直接写正文；需要保留原句或相关反思时，再按需使用 `### original`、`### reflection` 等分段。无需为了结构完整重复生成 moment，reflection 使用第一人称且只对应相关事件。具体写法见 [模型操作指南](docs/tarn-model-guide.md)。
 
 并非每轮聊天都应该写桶。稳定偏好、边界、关系学习、重要事件和会影响未来的短期状态才值得进入候选；普通闲聊可以只留在原文或日印象里。
 
@@ -91,7 +83,7 @@ Word Map 是从记忆派生的词与共现关系，适合诊断和提供弱提�
 
 ### 5. 年轮、whisper 与关系天气
 
-- **年轮 comment**：再次阅读某条记忆后的感受，挂在源 bucket 上；只能陪伴可靠命中，不能单独诱发召回。
+- **年轮 comment**：挂在源 bucket 上的后续进展、补充或感受；事实更新参与当前情况整理，感受与具体事件对应。
 - **whisper**：没有源 bucket 的碎碎念或感受，保存为 `type=feel`；可单独读取，也可作为自我画像的候选证据。
 - **日印象 / 关系天气**：描述某天的关系温度，不等同于当天事实清单，默认不作为直接 seed。
 
