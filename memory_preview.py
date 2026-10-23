@@ -1,6 +1,7 @@
 """Bounded read previews; stored bodies and rings remain untouched."""
 
 from datetime import datetime, timezone
+from memory_state import current_view, current_view_text
 
 
 def _clip(text: str, limit: int) -> str:
@@ -11,6 +12,10 @@ def recent_ring_preview(bucket: dict, body: str) -> str:
     """Give recent rings their own budget, independent of the original body."""
     raw = bucket.get("metadata", {}).get("comments", [])
     rings = [item for item in raw if isinstance(item, dict) and str(item.get("content") or "").strip()] if isinstance(raw, list) else []
+    if current_view(bucket):
+        return (f'[记忆预览；完整读取: read_bucket(bucket_id="{bucket["id"]}")]\n'
+                + _clip(current_view_text(bucket), 1400)
+                + f"\n[原记录及 {len(rings)} 条年轮保留在完整记忆中]")
 
     def date_key(index_item):
         index, item = index_item

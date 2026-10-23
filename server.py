@@ -94,6 +94,8 @@ from memory_edges import MemoryEdgeStore
 from entity_edges import EntityEdgeStore, extract_entity_edges_from_bucket
 from memory_moments import MemoryMomentStore, parse_bucket_moments
 from memory_preview import recent_ring_preview
+from memory_reconciliation import MemoryReconciler, eligible as reconciliation_eligible
+from memory_state import current_view, current_view_text, memory_lifecycle, lifecycle_label, memory_revision, VALIDITY, PROGRESS, RETENTION
 from memory_relevance import (
     active_facets,
     emotional_recall_plan,
@@ -180,6 +182,10 @@ entity_edge_store = EntityEdgeStore(config)            # Person/object hint edge
 memory_node_store = MemoryNodeStore(config)            # Computable memory node index / 可计算记忆节点
 memory_moment_store = MemoryMomentStore(config)        # Structured bucket body/comment moment index / 记忆片段索引
 memory_write_gate = MemoryWriteGate(config)            # Automatic grow gate / 自动写入门卫
+memory_reconciler = MemoryReconciler(bucket_mgr, lambda: dehydrator)
+_reconciliation_tasks = {}
+_reconciliation_dirty = set()
+_embedding_refresh_locks = {}
 reflection_engine = ReflectionEngine(config)           # Reflection worker / 关系天气与关系整理
 portrait_engine = DailyPortraitMaintainer(config)      # Daily portrait state / 每日画像状态
 dream_engine = DreamEngine(config)                     # Night dream worker / 夜梦
@@ -194,7 +200,7 @@ reminder_store = ReminderStore(config)                    # Standalone care memo
 # host="0.0.0.0" so Docker container's SSE is externally reachable
 # stdio mode ignores host (no network)
 mcp = FastMCP(
-    "Ombre Brain",
+    "Tarn",
     host="0.0.0.0",
     port=8000,
 )
@@ -2492,7 +2498,8 @@ async def _auto_generate_write_moment_if_needed(
     _ = tags
     if _is_self_anchor_write_content(self_anchor, domain):
         return str(content or "").strip()
-    return await _auto_generate_moment_if_missing(content)
+    # Index long bodies directly; writing a second summary into the body is unnecessary.
+    return content
 
 
 def _bucket_read_payload(bucket: dict) -> dict:
@@ -2543,6 +2550,12 @@ def _bucket_read_payload(bucket: dict) -> dict:
         "metadata_view": metadata_view,
         **metadata_view,
         "content": strip_wikilinks(bucket.get("content", "")),
+        "current_view": current_view(bucket),
+        "related_memories": [item for item in [meta.get("tarn_related"), *(meta.get("tarn_conflicts") or [])] if item],
+        "view_revisions": [{"id": item.get("id"), "created": item.get("created")} for item in meta.get("tarn_view_history", [])],
+        "current_text": current_view_text(bucket),
+        "lifecycle": memory_lifecycle(bucket),
+        "lifecycle_label": lifecycle_label(bucket),
         "score": decay_engine.calculate_score(meta),
     }
 
@@ -3184,6 +3197,30 @@ def _queue_memory_enrichment(bucket_id: str, *, force: bool = False) -> None:
     loop.create_task(_enrich_memory_async(bucket_id, force=force))
 
 
+def _queue_memory_reconciliation(bucket_id: str) -> None:
+    previous = _reconciliation_tasks.get(bucket_id)
+    if previous and not previous.done():
+        _reconciliation_dirty.add(bucket_id)
+        return
+
+    async def refresh():
+        try:
+            if await memory_reconciler.refresh(bucket_id):
+                bucket = await bucket_mgr.get(bucket_id)
+                if bucket:
+                    memory_moment_store.upsert_bucket(bucket)
+                    _queue_embedding_refresh(bucket_id)
+        except Exception as exc:
+            logger.warning("Memory reconciliation failed: %s: %s", bucket_id, type(exc).__name__)
+        finally:
+            _reconciliation_tasks.pop(bucket_id, None)
+            if bucket_id in _reconciliation_dirty:
+                _reconciliation_dirty.discard(bucket_id)
+                _queue_memory_reconciliation(bucket_id)
+
+    _reconciliation_tasks[bucket_id] = asyncio.get_running_loop().create_task(refresh())
+
+
 async def _enrich_memory_async(bucket_id: str, *, force: bool = False) -> None:
     try:
         bucket = await bucket_mgr.get(bucket_id)
@@ -3466,7 +3503,7 @@ async def dream_hook(request):
         parts = []
         for b in recent:
             meta = b["metadata"]
-            resolved_tag = "[已解决]" if meta.get("resolved", False) else "[未解决]"
+            resolved_tag = f"[{lifecycle_label(b)}]"
             parts.append(
                 f"{meta.get('name', b['id'])} {resolved_tag} "
                 f"V{meta.get('valence', 0.5):.1f}/A{meta.get('arousal', 0.3):.1f}\n"
@@ -3669,10 +3706,21 @@ def _handoff_query_hint(query: str) -> str:
 async def _refresh_bucket_embedding(bucket_id: str) -> bool:
     if not getattr(embedding_engine, "enabled", False):
         return False
-    bucket = await bucket_mgr.get(bucket_id)
-    if not bucket:
+    lock = _embedding_refresh_locks.setdefault(bucket_id, asyncio.Lock())
+    async with lock:
+        for _ in range(2):
+            bucket = await bucket_mgr.get(bucket_id)
+            if not bucket:
+                return False
+            text = bucket_text_for_embedding(bucket)
+            ok = await embedding_engine.generate_and_store(bucket_id, text)
+            latest = await bucket_mgr.get(bucket_id)
+            if not latest:
+                return False
+            if bucket_text_for_embedding(latest) == text:
+                return ok
+        _queue_embedding_refresh(bucket_id)
         return False
-    return await embedding_engine.generate_and_store(bucket_id, bucket_text_for_embedding(bucket))
 
 
 def _delete_bucket_indexes(bucket_id: str) -> tuple[dict, list[str]]:
@@ -4194,67 +4242,19 @@ async def _merge_or_create(
     返回 (桶ID, 显示名称, 是否合并)。
     """
     content = _normalize_memory_sections_for_write(content)
-    try:
-        existing = await bucket_mgr.search(
-            content,
-            limit=1,
-            domain_filter=domain or None,
-            include_archive=False,
-        )
-    except Exception as e:
-        logger.warning(f"Search for merge failed, creating new / 合并搜索失败，新建: {e}")
-        existing = []
-
     related_bucket = await _find_readonly_related_bucket(content)
-
-    if allow_merge and existing and existing[0].get("score", 0) > config.get("merge_threshold", 90):
-        bucket = existing[0]
-        # --- Never merge into pinned/protected buckets ---
-        # --- 不合并到钉选/保护桶 ---
-        if not (
-            bucket["metadata"].get("pinned")
-            or bucket["metadata"].get("protected")
-            or bucket["metadata"].get("type") == "feel"
-            or _is_profile_fact_bucket(bucket)
-        ):
-            try:
-                merged = await dehydrator.merge(bucket["content"], content)
-                merged = _normalize_memory_sections_for_write(merged)
-                old_v = bucket["metadata"].get("valence", 0.5)
-                old_a = bucket["metadata"].get("arousal", 0.3)
-                merged_valence = round((old_v + valence) / 2, 2)
-                merged_arousal = round((old_a + arousal) / 2, 2)
-                await bucket_mgr.update(
-                    bucket["id"],
-                    content=merged,
-                    tags=list(set(bucket["metadata"].get("tags", []) + tags)),
-                    importance=max(bucket["metadata"].get("importance", 5), importance),
-                    domain=list(set(bucket["metadata"].get("domain", []) + domain)),
-                    valence=merged_valence,
-                    arousal=merged_arousal,
-                )
-                _queue_embedding_refresh(bucket["id"])
-                return bucket["id"], bucket["metadata"].get("name", bucket["id"]), True, related_bucket
-            except Exception as e:
-                logger.warning(f"Merge failed, creating new / 合并失败，新建: {e}")
-
-    bucket_id = await bucket_mgr.create(
-        content=content,
-        tags=tags,
-        importance=importance,
-        domain=domain,
-        valence=valence,
-        arousal=arousal,
-        name=name or None,
-        date=date or None,
+    bucket_id, result_name, merged = await memory_reconciler.write(
+        content, tags=tags, importance=importance, domain=domain,
+        valence=valence, arousal=arousal, name=name or None, date=date or None,
         extra_metadata=_memory_classification_metadata(
-            memory_subject,
-            memory_layer,
-            memory_classification_source,
+            memory_subject, memory_layer, memory_classification_source,
         ),
     )
+    bucket = await bucket_mgr.get(bucket_id)
+    if bucket:
+        memory_moment_store.upsert_bucket(bucket)
     _queue_embedding_refresh(bucket_id)
-    return bucket_id, name or bucket_id, False, related_bucket
+    return bucket_id, result_name, merged, related_bucket
 
 
 def _memory_classification_metadata(
@@ -5311,12 +5311,12 @@ def _direct_bucket_header(bucket: dict, moment: dict) -> str:
     date_part = " ".join(_bucket_date_meta_parts(bucket, moment))
     return (
         f"[bucket_id:{bucket_id}] [moment_id:{moment.get('moment_id') or ''}] "
-        f"{date_part} {section} {title}"
+        f"{date_part} [{lifecycle_label(bucket)}] {section} {title}"
     ).strip()
 
 
 def _rendered_bucket_content(bucket: dict) -> str:
-    text = strip_wikilinks(str(bucket.get("content") or ""))
+    text = strip_wikilinks(current_view_text(bucket) or str(bucket.get("content") or ""))
     text = strip_display_temperature_sections(text)
     text = strip_followup_sections(text)
     return strip_temperature_meaning_lines(text).strip()
@@ -8259,6 +8259,7 @@ async def comment_bucket(
     if not entry:
         return {"error": "write failed", "id": bucket_id}
     bucket = await bucket_mgr.get(bucket_id)
+    _queue_memory_reconciliation(bucket_id)
     embedding_queued = _queue_embedding_refresh(bucket_id)
     return {
         "status": "commented",
@@ -8305,6 +8306,7 @@ async def delete_bucket_comment(bucket_id: str, comment_id: str) -> dict:
     if result.get("status") != "deleted":
         return {"error": "delete failed", "id": bucket_id, "comment_id": comment_id}
 
+    _queue_memory_reconciliation(bucket_id)
     embedding_queued = _queue_embedding_refresh(bucket_id)
     bucket = await bucket_mgr.get(bucket_id)
     return {
@@ -8358,6 +8360,7 @@ async def api_bucket_comment(request):
     if not entry:
         return JSONResponse({"error": "write failed", "id": bucket_id}, status_code=500)
 
+    _queue_memory_reconciliation(bucket_id)
     embedding_queued = _queue_embedding_refresh(bucket_id)
 
     bucket = await bucket_mgr.get(bucket_id)
@@ -8402,6 +8405,7 @@ async def api_bucket_comment_delete(request):
     if result.get("status") != "deleted":
         return JSONResponse({"error": "delete failed"}, status_code=500)
 
+    _queue_memory_reconciliation(bucket_id)
     embedding_queued = _queue_embedding_refresh(bucket_id)
 
     bucket = await bucket_mgr.get(bucket_id)
@@ -8673,7 +8677,7 @@ async def _grow_direct_structured_content(content: str, title: str = "", gate_pr
     name = title.strip() or _title_from_memory_heading(direct_content) or analysis.get("suggested_name", "")
     related_bucket = await _find_readonly_related_bucket(direct_content)
 
-    bucket_id = await bucket_mgr.create(
+    bucket_id, result_name, merged, related_bucket = await _merge_or_create(
         content=direct_content,
         tags=tags,
         importance=importance,
@@ -8681,16 +8685,14 @@ async def _grow_direct_structured_content(content: str, title: str = "", gate_pr
         valence=analysis.get("valence", 0.5),
         arousal=analysis.get("arousal", 0.3),
         name=name or None,
-        extra_metadata=_memory_classification_metadata(
-            classification["memory_subject"],
-            classification["memory_layer"],
-            classification["memory_classification_source"],
-        ),
+        memory_subject=classification["memory_subject"],
+        memory_layer=classification["memory_layer"],
+        memory_classification_source=classification["memory_classification_source"],
     )
     _queue_embedding_refresh(bucket_id)
     _queue_memory_enrichment(bucket_id)
     related_note = _format_readonly_related_memory(related_bucket) if related_bucket else ""
-    return f"{gate_prefix}1条|新1合0\n📝{name or bucket_id}{related_note}"
+    return f"{gate_prefix}1条|新{int(not merged)}合{int(merged)}\n{result_name}{related_note}"
 
 
 # LOCAL-ADAPTATION: [新增/改动] 相对 upstream/main@1dac438，含本地新增、采用本地适配版本。
@@ -8716,8 +8718,10 @@ async def grow(content: str, auto: bool = False, source: str = "", title: str = 
             bucket_mgr=bucket_mgr,
             auto=auto,
         )
-        if not gate_decision.allow:
+        if not gate_decision.allow and "duplicate_existing_memory" not in gate_decision.reasons:
             return _format_write_gate_result(gate_decision)
+        if "duplicate_existing_memory" in gate_decision.reasons:
+            gate_decision = None
     gate_prefix = f"{_format_write_gate_result(gate_decision)}\n" if gate_decision else ""
     content = str(content or "").strip()
     if _is_grow_direct_content(content):
@@ -8997,6 +9001,9 @@ async def trace(
     content: str = "",
     date: str = "",
     delete: bool = False,
+    validity: str = "",
+    progress: str = "",
+    retention: str = "",
 ) -> str:
     """修改已有记忆，不创建新桶。tags/domain/content 是替换；date 可改事件日期；改前先 read_bucket。resolved/digested 让旧事沉底。只改元数据/date 不重建 embedding，改 content/name 才重建。"""
 
@@ -9021,6 +9028,16 @@ async def trace(
 
     # --- Collect only fields actually passed / 只收集用户实际传入的字段 ---
     updates = {}
+    lifecycle = dict(bucket.get("metadata", {}).get("memory_lifecycle") or {})
+    for key, value, choices in (("validity", validity, VALIDITY), ("progress", progress, PROGRESS), ("retention", retention, RETENTION)):
+        if value:
+            if value not in choices:
+                return f"{key} 可选值: {', '.join(sorted(choices))}"
+            lifecycle[key] = value
+    if validity or progress or retention:
+        updates["extra_metadata"] = {"memory_lifecycle": lifecycle}
+        if retention in {"kept", "favorite"}:
+            updates.update(resolved=False, digested=False)
     if name:
         updates["name"] = name
     if domain:
@@ -9065,11 +9082,17 @@ async def trace(
     success = await bucket_mgr.update(bucket_id, **updates)
     if not success:
         return f"修改失败: {bucket_id}"
+    if retention in {"kept", "favorite"} and bucket.get("metadata", {}).get("type") == "archived":
+        await bucket_mgr.activate(bucket_id)
+    if validity or progress or retention:
+        memory_moment_store.upsert_bucket(await bucket_mgr.get(bucket_id))
 
     # Re-generate embedding if content or title changed.
-    if "content" in updates or "name" in updates:
+    if "content" in updates or "name" in updates or "extra_metadata" in updates:
         after_bucket = await bucket_mgr.get(bucket_id)
         _queue_embedding_refresh_if_changed(bucket_id, before_bucket, after_bucket)
+    if "content" in updates or "name" in updates or "date" in updates:
+        _queue_memory_reconciliation(bucket_id)
 
     changed = ", ".join(f"{k}={v}" for k, v in updates.items() if k != "content")
     if "content" in updates:
@@ -9151,7 +9174,7 @@ async def pulse(include_archive: bool = False) -> str:
         domains = ",".join(meta.get("domain", []))
         val = meta.get("valence", 0.5)
         aro = meta.get("arousal", 0.3)
-        resolved_tag = " [已解决]" if meta.get("resolved", False) else ""
+        resolved_tag = f" [{lifecycle_label(b)}]"
         lines.append(
             f"{icon} [{meta.get('name', b['id'])}]{resolved_tag} "
             f"bucket_id:{b['id']} "
@@ -9215,8 +9238,8 @@ async def introspection(
         created_to=created_to,
     )
 
-    # --- Sort by creation time desc, take requested page ---
-    candidates.sort(key=lambda b: b["metadata"].get("created", ""), reverse=True)
+    # Recent writes/rings take priority, while the explicit filter still uses creation dates.
+    candidates.sort(key=lambda b: b["metadata"].get("updated_at") or b["metadata"].get("created", ""), reverse=True)
     recent = candidates[offset : offset + limit]
 
     if not recent:
@@ -9227,7 +9250,7 @@ async def introspection(
     parts = []
     for b in recent:
         meta = b["metadata"]
-        resolved_tag = " [已解决]" if meta.get("resolved", False) else " [未解决]"
+        resolved_tag = f" [{lifecycle_label(b)}]"
         domains = ",".join(meta.get("domain", []))
         val = meta.get("valence", 0.5)
         aro = meta.get("arousal", 0.3)
@@ -11035,6 +11058,47 @@ async def api_reminder_update(request):
     return JSONResponse({"status": "updated", "reminder": _reminder_public_payload(item)})
 
 
+@mcp.custom_route("/api/bucket/{bucket_id}/reconciliation", methods=["POST"])
+async def api_bucket_reconciliation(request):
+    """Read-only model preview, or restore a previous view of unchanged sources."""
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    bucket_id = request.path_params["bucket_id"]
+    if not MEMORY_ID_RE.fullmatch(bucket_id):
+        return JSONResponse({"error": "invalid bucket_id"}, status_code=400)
+    bucket = await bucket_mgr.get(bucket_id)
+    if not bucket:
+        return JSONResponse({"error": "not found"}, status_code=404)
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse({"error": "invalid json"}, status_code=400)
+    if not isinstance(body, dict):
+        return JSONResponse({"error": "invalid body"}, status_code=400)
+    if body.get("restore_view_id"):
+        previous = next((view for view in bucket["metadata"].get("tarn_view_history", []) if view.get("id") == body["restore_view_id"]), None)
+        if not previous:
+            return JSONResponse({"error": "revision not found"}, status_code=404)
+        if previous.get("source_revision") != memory_revision(bucket, include_state=False):
+            return JSONResponse({"error": "sources changed; previous view is stale"}, status_code=409)
+        history = [*bucket["metadata"].get("tarn_view_history", [])]
+        if bucket["metadata"].get("tarn_view"):
+            history.append(bucket["metadata"]["tarn_view"])
+        ok = await bucket_mgr.update(bucket_id, expected_revision=memory_revision(bucket), extra_metadata={"tarn_view": previous, "tarn_view_history": history})
+        if not ok:
+            return JSONResponse({"error": "concurrent update"}, status_code=409)
+        refreshed = await bucket_mgr.get(bucket_id)
+        memory_moment_store.upsert_bucket(refreshed)
+        _queue_embedding_refresh(bucket_id)
+        return JSONResponse({"status": "restored", **_bucket_read_payload(refreshed)})
+    if not reconciliation_eligible(bucket):
+        return JSONResponse({"status": "skipped", "reason": "bucket excluded from automatic reconciliation"})
+    proposal = await memory_reconciler.propose(bucket, [], fixed_target=bucket_id)
+    return JSONResponse({"status": "preview" if proposal else "skipped", "source_revision": memory_revision(bucket), "proposal": proposal})
+
+
 @mcp.custom_route("/api/bucket/{bucket_id}", methods=["PATCH"])
 async def api_bucket_update(request):
     """Update dashboard-editable bucket body fields."""
@@ -11059,7 +11123,13 @@ async def api_bucket_update(request):
     name = str(body.get("name") or "").strip() if "name" in body else None
     event_date = str(body.get("date") or "").strip() if "date" in body else None
 
-    if content is None and name is None and event_date is None:
+    lifecycle_changes = {}
+    for key, choices in (("validity", VALIDITY), ("progress", PROGRESS), ("retention", RETENTION)):
+        if key in body:
+            if not isinstance(body[key], str) or body[key] not in choices:
+                return JSONResponse({"error": f"invalid {key}"}, status_code=400)
+            lifecycle_changes[key] = body[key]
+    if content is None and name is None and event_date is None and not lifecycle_changes:
         return JSONResponse({"error": "missing content, name, or date"}, status_code=400)
     if event_date:
         normalized_date = local_date_key(event_date)
@@ -11079,6 +11149,10 @@ async def api_bucket_update(request):
             return JSONResponse({"error": _favorite_reason_error()}, status_code=400)
 
     update_kwargs = {}
+    if lifecycle_changes:
+        update_kwargs["extra_metadata"] = {"memory_lifecycle": {**(meta.get("memory_lifecycle") or {}), **lifecycle_changes}}
+        if lifecycle_changes.get("retention") in {"kept", "favorite"}:
+            update_kwargs.update(resolved=False, digested=False)
     if content is not None:
         update_kwargs["content"] = content
     if name is not None:
@@ -11092,12 +11166,18 @@ async def api_bucket_update(request):
     if not ok:
         return JSONResponse({"error": "update failed"}, status_code=500)
 
+    if lifecycle_changes.get("retention") in {"kept", "favorite"} and meta.get("type") == "archived":
+        await bucket_mgr.activate(bucket_id)
     bucket = await bucket_mgr.get(bucket_id)
     embedding_queued = (
         _queue_embedding_refresh_if_changed(bucket_id, before_bucket, bucket)
-        if (content is not None or name is not None)
+        if (content is not None or name is not None or lifecycle_changes)
         else False
     )
+    if content is not None or name is not None or event_date is not None:
+        _queue_memory_reconciliation(bucket_id)
+    if lifecycle_changes and bucket:
+        memory_moment_store.upsert_bucket(bucket)
     return JSONResponse({
         "status": "updated",
         "id": bucket_id,

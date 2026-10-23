@@ -40,6 +40,7 @@ import frontmatter
 import jieba
 
 from identity import identity_names
+from memory_state import memory_revision
 from memory_relevance import content_terms_for_query, memory_relevance_options_from_config, recall_topic_query
 from query_terms import GENERIC_LEXICAL_STOPWORDS
 from utils import (
@@ -298,6 +299,10 @@ class BucketManager:
             post = frontmatter.load(file_path)
         except Exception as e:
             logger.warning(f"Failed to load bucket for update / 加载桶失败: {file_path}: {e}")
+            return False
+
+        expected_revision = kwargs.pop("expected_revision", None)
+        if expected_revision is not None and memory_revision({"content": post.content, "metadata": dict(post.metadata)}) != expected_revision:
             return False
 
         # --- Pinned/protected buckets: lock importance to 10, ignore importance changes ---

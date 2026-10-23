@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from memory_state import memory_lifecycle, lifecycle_label
 from typing import Any
 
 DOMAIN_LABELS = {
@@ -417,6 +418,8 @@ def normalize_memory_metadata(bucket: dict[str, Any] | None) -> dict[str, Any]:
         "domain_parent_label": DOMAIN_PARENT_LABELS.get(parent, parent),
         "kind": kind,
         "status_view": status_view,
+        "lifecycle": memory_lifecycle(bucket),
+        "lifecycle_label": lifecycle_label(bucket),
         "flags": flags,
         "legacy_domain": legacy_domain,
     }
@@ -552,7 +555,7 @@ def _infer_status(
         return "protected"
     if _truthy(meta.get("digested")) or "digested" in compact or "已消化" in blob:
         return "digested"
-    if meta.get("resolved") is False or "unresolved" in compact or "未解决" in blob:
+    if "unresolved" in compact or "未解决" in blob:
         return "unresolved"
     return "active"
 
@@ -596,7 +599,7 @@ def _flags(
             {"self_anchor", "first_person_anchor", "firstpersonanchor", "自我"},
         ),
     )
-    add("favorite", "favorite" in compact or "最爱" in blob)
+    add("favorite", memory_lifecycle({"metadata": meta})["retention"] == "favorite")
     add("source_record", "source_record" in compact or "sourcerecord" in compact)
     add("profile_fact", "profile_fact" in compact or "profilefact" in compact or bool(_clean(meta.get("profile_kind"))))
     add("archived", _infer_status(meta, type_value, path_value, legacy_domain, tags) == "archived")

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from favorite_tags import GENERIC_FAVORITE_TAG, has_favorite_memory_tag
+from memory_state import memory_lifecycle
 
 LAYER_CORE = "core_memory"
 LAYER_ANCHOR = "long_term_anchor"
@@ -249,6 +250,9 @@ def infer_bucket_layer(bucket: dict[str, Any] | None) -> str:
     meta = _metadata(bucket)
     tags = _tags(meta)
     bucket_type = _lower(meta.get("type") or meta.get("bucket_type"))
+    lifecycle = memory_lifecycle(bucket)
+    if lifecycle["validity"] in {"expired", "superseded"} or lifecycle["retention"] == "archived":
+        return LAYER_ARCHIVE
 
     if _truthy(meta.get("archived")) or _truthy(meta.get("digested")) or _truthy(meta.get("resolved")):
         return LAYER_ARCHIVE
@@ -264,7 +268,7 @@ def infer_bucket_layer(bucket: dict[str, Any] | None) -> str:
         return LAYER_CORE
     if _truthy(meta.get("anchor")) or _truthy(meta.get("bucket_anchor")):
         return LAYER_ANCHOR
-    if _has_favorite_tag(tags):
+    if lifecycle["retention"] == "favorite":
         return LAYER_FAVORITE
     if bucket_type == "feel":
         return LAYER_AFFECT_CONTEXT
@@ -344,7 +348,7 @@ def can_bucket_be_recent_context(bucket: dict[str, Any] | None, *, explicit_look
     layer = infer_bucket_layer(bucket)
     if explicit_lookup:
         return layer in {LAYER_ANCHOR, LAYER_DYNAMIC, LAYER_FAVORITE}
-    return layer == LAYER_DYNAMIC
+    return layer == LAYER_DYNAMIC and memory_lifecycle(bucket or {})["progress"] != "ended"
 
 
 def _gate_payload(allowed: bool, reason: str) -> dict[str, Any]:
@@ -610,6 +614,8 @@ def _metadata(item: dict[str, Any]) -> dict[str, Any]:
 def _moment_metadata(moment: dict[str, Any]) -> dict[str, Any]:
     meta = _metadata(moment)
     mapped = dict(meta)
+    if "bucket_memory_lifecycle" in meta:
+        mapped["memory_lifecycle"] = meta["bucket_memory_lifecycle"]
     if "bucket_type" in meta and "type" not in mapped:
         mapped["type"] = meta.get("bucket_type")
     if "bucket_anchor" in meta and "anchor" not in mapped:

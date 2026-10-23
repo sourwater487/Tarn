@@ -637,6 +637,7 @@
     margin-bottom: 24px;
   }
   .detail-meta .field { font-size: 12px; }
+  .detail-meta .field select { width: 100%; max-width: 100%; font: inherit; padding: 6px; color: var(--text); background: var(--bg); }
   .detail-meta .field label {
     color: var(--text-light);
     display: block;
@@ -4508,6 +4509,8 @@ function isReflectionEventBucket(bucket) {
 function isSurfaceableBucket(bucket) {
   if (!bucket) return false;
   var meta = bucket.metadata || bucket || {};
+  var lifecycle = bucket.lifecycle || {};
+  if (['expired', 'superseded'].includes(lifecycle.validity) || lifecycle.retention === 'archived' || lifecycle.progress === 'ended') return false;
   var type = String(bucket.type || meta.type || '').trim();
   if (type === 'archived' || type === 'permanent' || type === 'feel') return false;
   if (bucket.resolved || meta.resolved || bucket.digested || meta.digested) return false;
@@ -6399,6 +6402,39 @@ async function searchBuckets(query) {
   }
 }
 
+function renderLifecycleFields(id, state) {
+  var fields = [
+    ['validity', '事实状态', [['current','当前有效'],['superseded','已替代'],['expired','已过期'],['uncertain','待确认']]],
+    ['progress', '事项进度', [['not_applicable','经历 / 无需处理'],['pending','待处理'],['ongoing','进行中'],['ended','已结束']]],
+    ['retention', '保存方式', [['kept','保留'],['favorite','收藏'],['archived','归档']]]
+  ];
+  return fields.map(function(field) {
+    var select = '<select data-bucket-id="' + escAttr(id) + '" data-field="' + field[0] + '" onchange="updateBucketLifecycle(this)">';
+    select += field[2].map(function(option) {
+      return '<option value="' + option[0] + '"' + ((state[field[0]] || field[2][0][0]) === option[0] ? ' selected' : '') + '>' + option[1] + '</option>';
+    }).join('');
+    return '<div class="field"><label>' + field[1] + '</label>' + select + '</select></div>';
+  }).join('');
+}
+
+async function updateBucketLifecycle(select) {
+  var id = select.dataset.bucketId;
+  var body = {}; body[select.dataset.field] = select.value;
+  select.disabled = true;
+  try {
+    var res = await authFetch(BASE + '/api/bucket/' + encodeURIComponent(id), {
+      method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    if (!res) return;
+    var data = await res.json();
+    if (!res.ok) throw new Error(data.error || '保存失败');
+    await showDetail(id);
+  } catch (e) {
+    alert('状态保存失败: ' + e.message);
+    await showDetail(id);
+  } finally { select.disabled = false; }
+}
+
 async function showDetail(id) {
   portraitEditorScope = '';
   var panel = document.getElementById('detail-panel');
@@ -6412,7 +6448,7 @@ async function showDetail(id) {
     var b = await res.json();
     var meta = b.metadata || {};
     var view = b.metadata_view || {};
-    var comments = Array.isArray(meta.comments) ? meta.comments : [];
+    var comments = Array.isArray(meta.comments) ? meta.comments.slice().reverse() : [];
     var commentsHtml = comments.length
       ? '<div class="detail-comments"><h3>年轮</h3>' + comments.map(function(c) {
           var canDelete = c && c.id && c.author === dashboardCommentAuthor && c.source === 'dashboard';
@@ -6450,7 +6486,7 @@ async function showDetail(id) {
         '<div class="field"><label>类型</label>' + esc(meta.type || 'dynamic') + '</div>' +
         '<div class="field"><label>主域</label>' + esc(bucketCanonicalDomainFullLabel(b) || '—') + '</div>' +
         '<div class="field"><label>记忆类型</label>' + esc(b.kind || view.kind || '—') + '</div>' +
-        '<div class="field"><label>状态视图</label>' + esc(b.status_view || view.status_view || '—') + '</div>' +
+        renderLifecycleFields(id, b.lifecycle || {}) +
         '<div class="field"><label>标记</label>' + esc(((b.flags || view.flags || []) || []).join(', ') || '—') + '</div>' +
         '<div class="field"><label>域</label>' + esc((meta.domain || []).join(', ')) + '</div>' +
         '<div class="field"><label>标签</label>' + esc((meta.tags || []).join(', ')) + '</div>' +
@@ -6483,7 +6519,9 @@ async function showDetail(id) {
         '<div class="field"><label>创建</label>' + esc(meta.created || '—') + '</div>' +
         '<div class="field"><label>最后活跃</label>' + esc(meta.last_active || '—') + '</div>' +
       '</div>' +
+      (b.current_text ? '<div class="bucket-content-block"><h3>当前情况</h3><div class="detail-content">' + esc(b.current_text) + '</div></div>' : '') +
       '<div class="bucket-content-block">' +
+        '<h3>原记录</h3>' +
         '<button id="bucket-content-edit-button" type="button" class="detail-edit-button" onclick="startBucketContentEdit(\'' + jsString(id) + '\')" aria-label="编辑正文" title="编辑正文">✎</button>' +
         '<div id="bucket-content-view" class="detail-content">' + esc(b.content || '') + '</div>' +
         '<form id="bucket-content-edit" class="content-edit-form hidden" onsubmit="submitBucketContentEdit(event, \'' + jsString(id) + '\')">' +

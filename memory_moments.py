@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+from memory_state import current_view, current_view_text, memory_lifecycle
 import sqlite3
 import unicodedata
 from datetime import datetime, timezone
@@ -964,8 +965,9 @@ def parse_bucket_moments(
     moments: list[dict] = []
     ordinal = 0
 
-    raw_content = str(bucket.get("content") or "")
-    source_base = _source_ref_base(bucket)
+    derived = current_view_text(bucket)
+    raw_content = derived or str(bucket.get("content") or "")
+    source_base = {} if derived else _source_ref_base(bucket)
     content = _clean_text(raw_content)
     if content:
         structured = _content_moments(
@@ -1002,7 +1004,7 @@ def parse_bucket_moments(
             )
             ordinal += 1
 
-    comments = meta.get("comments", [])
+    comments = [] if current_view(bucket) else meta.get("comments", [])
     if isinstance(comments, list):
         for index, comment in enumerate(comments):
             if not isinstance(comment, dict):
@@ -1559,6 +1561,7 @@ def _bucket_metadata(meta: dict, bucket: dict) -> dict:
             "bucket_pinned": meta.get("pinned"),
             "bucket_protected": meta.get("protected"),
             "bucket_resolved": meta.get("resolved"),
+            "bucket_memory_lifecycle": memory_lifecycle(bucket),
             "bucket_digested": meta.get("digested"),
             "bucket_memory_subject": meta.get("memory_subject"),
             "bucket_memory_layer": meta.get("memory_layer"),

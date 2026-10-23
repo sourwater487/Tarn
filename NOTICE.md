@@ -1,6 +1,6 @@
 # Tarn — Origins and Notice
 
-Tarn continues the privately adapted Ombre-Brain project under its own name. Git history and the original attribution are retained. The notices below remain applicable; this rename does not change their terms.
+Tarn continues Lin's adapted Ombre-Brain project under its own name in a public repository. Git history and the original attribution are retained. The notices below remain applicable; this rename does not change their terms.
 
 This repository is a fork of [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain).
 

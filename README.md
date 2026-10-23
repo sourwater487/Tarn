@@ -2,7 +2,9 @@
 
 Tarn 是 Lin 的个人记忆与连续性系统，以 Markdown 记忆桶和年轮保存经历，同时提供 MCP 与聊天 Gateway。
 
-项目从现有 Ombre-Brain 私人分支独立发展，保留完整 Git 历史。原项目来源及许可见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。现有 `ombre-*` 服务名、环境变量和数据路径暂作为兼容接口保留；更名不迁移或重写记忆数据。
+项目从 Lin 使用的 Ombre-Brain 分支独立发展，仓库公开，保留完整 Git 历史。原项目来源及许可见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。现有 `ombre-*` 服务名、环境变量和数据路径暂作为兼容接口保留；更名不迁移或重写记忆数据。
+
+主聊天模型的提示词由 Lin 在客户端上传的 file 管理，仓库不再维护过时的 `CLAUDE_PROMPT.md`。后台记忆整理使用独立的 [Tarn 整理规则](resources/tarn-write-policy.txt)。
 
 当前改进计划和验收标准见 [Tarn 记忆改进](docs/tarn-memory-evolution.md)。
 

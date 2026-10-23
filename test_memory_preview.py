@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from memory_preview import recent_ring_preview
+from memory_state import lifecycle_label
 
 
 class MemoryPreviewTests(unittest.TestCase):
@@ -73,6 +74,7 @@ class IntrospectionRegression(unittest.IsolatedAsyncioTestCase):
             "_filter_by_created_date": lambda items, **kwargs: (items, ""),
             "bucket_content_for_recall": lambda b: b["content"],
             "recent_ring_preview": recent_ring_preview,
+            "lifecycle_label": lifecycle_label,
             "embedding_engine": None,
             "_profile_fact_candidate_hint": lambda *args: "",
         }

@@ -2,7 +2,7 @@
 
 ## Confirmed direction
 
-Tarn develops independently from the existing private Ombre-Brain fork. Preserve provenance, Git history, memory IDs, original text and rings. Do not delete or rewrite existing memories as part of repository migration. Runtime service names and storage paths remain compatible.
+Tarn develops independently from Lin's Ombre-Brain fork in a public repository. Preserve provenance, Git history, memory IDs, original text and rings. Do not delete or rewrite existing memories as part of repository migration. Runtime service names and storage paths remain compatible.
 
 ## First repair: introspection visibility
 
@@ -12,7 +12,7 @@ The read preview now places the newest three dated rings before an independently
 
 Regression: a long body and four rings (initial toy, revised toy, wiring change, seller update) must show the last three updates. Timezone-aware sorting, malformed comments, bounds and no mutations are covered. This does not establish that the last ring is the final factual state, and does not repair all other recall entry points.
 
-## Subsequent changes requiring reviewed model instructions
+## Implemented after instruction review
 
 - Write reconciliation: distinguish exact repetition, progress, superseding decisions, related events and unresolved conflicts. Similarity is candidate discovery, not permission to merge. Preserve provenance and reversible versions.
 - Current state: derive a compact current view from body and relevant rings, with source references and event time. Keep history. Distinguish selection, intention and completed action. A new seller update must not erase a wiring decision.
@@ -20,4 +20,20 @@ Regression: a long body and four rings (initial toy, revised toy, wiring change,
 - Reflection: attach only to supported events/source segments; permit absent or independently stored reflections. Mixed topics must not inherit one blanket classification.
 - Moments: remove forced duplicate prose for short memories while retaining necessary search indexes. Measure duplication in actual model injection, not only UI storage.
 
-No new fixed model instructions or automatic historical reconciliation are enabled in this first repair. Review exact instruction text with Lin before implementation. Changes to existing memory data and schema require an explicit migration scope and reversible plan.
+Lin approved the simplified instructions in `write-policy-proposal.md`. The fixed rules alone are deployed as `resources/tarn-write-policy.txt`; a test checks exact equivalence. The main chat prompt is managed through Lin's uploaded files, and the obsolete `CLAUDE_PROMPT.md` is removed from the current tree.
+
+### Runtime behavior
+
+- `hold` and the three `grow` paths use the configured dehydration model to reconcile new input with up to five relevant, editable memories. A similarity-only rejection in the automatic write gate is passed to reconciliation. New writes to pinned/self-anchor memories retain their existing special behavior.
+- Exact repetition reuses a bucket. Progress and replacement decisions append the original incoming text as a ring, preserve the original body, and save a derived `tarn_view` with source references. Conflicting evidence remains in separate records and is marked uncertain on both sides when the source version still matches.
+- Ring creation/deletion and explicit body edits queue a view refresh. Complete source input is required; oversized material is skipped rather than truncated. Model or validation failure preserves the original write without automatic merging. Invalid optional expiry dates are omitted without discarding valid progress.
+- Event text and reflection are separate source packets. Reflections must quote existing text and cite an event outside themselves. Unattached reflections remain in the original record; they are not moved or deleted automatically.
+- Recall text and moment indexes use the current view. Full reads and the dashboard retain originals and rings. Changed sources invalidate the old view immediately, and pending reads expose recent rings. Introspection shows a current view once available instead of repeating the same updates twice.
+- `validity`, `progress`, and `retention` are separate dimensions. `trace` and dashboard PATCH accept them. Ordinary experiences default to no task status. Ended experiences remain available to relevant queries but do not enter automatic recent context. Explicit expiry and supersession take precedence over favorite status. Legacy resolved/digested behavior remains compatible; explicitly keeping a record clears those legacy sinking flags.
+- Source-version checks prevent applying a proposal to a changed bucket. Embedding refreshes serialize per bucket and recheck their input after generation. Previous views are retained in `tarn_view_history`; the authenticated reconciliation endpoint can restore a previous view when its sources are still unchanged.
+
+The authenticated `POST /api/bucket/{id}/reconciliation` endpoint returns a read-only proposal by default. `restore_view_id` explicitly requests restoration. There is no startup backfill or automatic bulk rewrite. Existing memories are reconsidered only on a subsequent relevant write/edit/ring update.
+
+### Verification
+
+`test_memory_reconciliation.py` covers real temporary Markdown writes, deduplication, retained history, source validation, concurrent changes, expiry, independent lifecycle dimensions, and reflection binding. `scripts/verify_tarn_model.py` is an opt-in check against the configured secondary API using synthetic examples and a temporary cache; it does not write production memory.

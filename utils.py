@@ -863,7 +863,8 @@ def bucket_content_for_recall(bucket: dict) -> str:
     """Build bucket body text for ordinary recall/search, excluding task-only blocks."""
     if not isinstance(bucket, dict):
         return ""
-    text = strip_wikilinks(str(bucket.get("content") or ""))
+    from memory_state import current_view_text
+    text = strip_wikilinks(current_view_text(bucket) or str(bucket.get("content") or ""))
     text = strip_affect_anchor(text)
     return strip_followup_sections(text).strip()
 
