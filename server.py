@@ -93,6 +93,7 @@ from memory_diffusion import (
 from memory_edges import MemoryEdgeStore
 from entity_edges import EntityEdgeStore, extract_entity_edges_from_bucket
 from memory_moments import MemoryMomentStore, parse_bucket_moments
+from memory_preview import recent_ring_preview
 from memory_relevance import (
     active_facets,
     emotional_recall_plan,
@@ -9236,7 +9237,7 @@ async def introspection(
             f"主题:{domains} V{val:.1f}/A{aro:.1f} "
             f"创建:{created}\n"
             f"ID: {b['id']}\n"
-            f"{_bucket_text_for_embedding(b)[:500]}"
+            f"{recent_ring_preview(b, bucket_content_for_recall(b))}"
         )
 
     header = (

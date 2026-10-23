@@ -23,3 +23,6 @@ backup_*/
 import_state.json
 .codex
 .last_deploy_commit
+data/
+backups/
+.env.*

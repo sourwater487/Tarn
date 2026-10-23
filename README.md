@@ -1,6 +1,10 @@
-# Ombre Brain — Haven/Rain Fork
+# Tarn
 
-Ombre Brain 是一套以 Markdown 记忆桶为长期真源、同时提供 MCP 与聊天 Gateway 的个人连续性系统。
+Tarn 是 Lin 的个人记忆与连续性系统，以 Markdown 记忆桶和年轮保存经历，同时提供 MCP 与聊天 Gateway。
+
+项目从现有 Ombre-Brain 私人分支独立发展，保留完整 Git 历史。原项目来源及许可见 [NOTICE.md](NOTICE.md) 和 [LICENSE](LICENSE)。现有 `ombre-*` 服务名、环境变量和数据路径暂作为兼容接口保留；更名不迁移或重写记忆数据。
+
+当前改进计划和验收标准见 [Tarn 记忆改进](docs/tarn-memory-evolution.md)。
 
 本仓库基于 [P0luz/Ombre-Brain](https://github.com/P0luz/Ombre-Brain) 二次开发。它保留原版的记忆桶、情绪坐标、遗忘曲线、向量检索和 Dashboard，并加入了保守召回、图关系、原文检索、跨窗口 handoff、画像、自我入口、照顾备忘、Darkroom、Dream、自动写入门卫，以及 OpenAI / Anthropic 兼容 Gateway。
 

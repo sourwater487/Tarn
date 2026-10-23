@@ -349,14 +349,15 @@ def test_reflection_filters_historical_sticker_rows_from_memory_material():
     assert STICKER_TEXT not in str(raw_turns)
 
 
-def test_primary_memory_policy_names_lin_instead_of_generic_user():
+def test_primary_memory_policy_keeps_current_conversation_authoritative():
     service = object.__new__(GatewayService)
     service.identity = {"user_display_name": "Lin", "ai_name": "Che"}
 
     policy = service._memory_reading_policy_context()
 
-    assert "prefer Lin's current message" in policy
-    assert "prefer the user's current message" not in policy
+    assert "以当前对话为准" in policy
+    assert "仅在有帮助时使用" in policy
+    assert "不必主动提及记忆来源" in policy
 
 
 def test_date_persona_trace_uses_identity_labels():
