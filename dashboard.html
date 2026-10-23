@@ -1140,6 +1140,9 @@
     box-shadow: inset 3px 3px 6px var(--shadow-dark-subtle), inset -2px -2px 4px var(--shadow-light);
   }
 
+  .network-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0; font-size: 12px; color: var(--text-dim); }
+  .network-controls button { min-height: 40px; padding: 6px 12px; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; cursor: pointer; }
+  .network-controls span { flex-basis: 100%; }
   .network-stage {
     position: relative;
   }
@@ -3403,6 +3406,14 @@
     <div class="legend-item"><span class="legend-dot" style="background:#9A7B4F"></span> permanent</div>
     <div class="legend-item"><span class="legend-dot" style="background:#8B6A6A"></span> feel</div>
     <div class="legend-item"><span class="legend-dot" style="background:#B0A590"></span> archived</div>
+  </div>
+  <div class="network-controls" role="group" aria-label="记忆网络视角">
+    <button type="button" onclick="zoomNetwork(1.3)" aria-label="放大网络">＋</button>
+    <button type="button" onclick="zoomNetwork(1 / 1.3)" aria-label="缩小网络">−</button>
+    <button type="button" onclick="resetNetworkView(false)">实际大小</button>
+    <button type="button" onclick="resetNetworkView(true)">查看全图</button>
+    <output id="network-zoom" aria-live="polite">100%</output>
+    <span>拖动浏览 · 双指或滚轮缩放 · 点选查看</span>
   </div>
   <div class="network-stage">
     <canvas id="network-canvas"></canvas>
@@ -6886,7 +6897,9 @@ var networkState = {
   data: null,
   positions: {},
   edgeMap: {},
-  view: { x: 0, y: 0 },
+  view: { x: 0, y: 0, scale: 1 },
+  pointers: {},
+  pinch: null,
   drag: null,
   linkedMotion: {},
   selectedId: '',
@@ -6930,32 +6943,50 @@ function initNetworkCanvas(canvas, ctx, W, H, data) {
   networkState.data = data || { nodes: [], edges: [] };
   networkState.positions = buildNetworkPositions(W, H, networkState.data);
   networkState.edgeMap = buildNetworkEdgeMap(networkState.data.edges || []);
-  networkState.view = { x: 0, y: 0 };
+  networkState.view = { x: 0, y: 0, scale: 1 };
+  networkState.pointers = {};
+  networkState.pinch = null;
+  resetNetworkView(false);
   networkState.drag = null;
   networkState.linkedMotion = {};
   networkState.selectedId = '';
   bindNetworkCanvas(canvas);
+  if (!canvas.__networkResizeObserver && typeof ResizeObserver !== 'undefined') {
+    canvas.__networkResizeObserver = new ResizeObserver(function() {
+      var width = canvas.offsetWidth, height = canvas.offsetHeight;
+      if (!width || !height || (width === networkState.width && height === networkState.height)) return;
+      networkState.view.x += (width - networkState.width) / 2;
+      networkState.view.y += (height - networkState.height) / 2;
+      networkState.width = width; networkState.height = height;
+      var dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.max(1, Math.floor(width * dpr));
+      canvas.height = Math.max(1, Math.floor(height * dpr));
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      hideNetworkPopover();
+    });
+    canvas.__networkResizeObserver.observe(canvas);
+  }
   startNetworkAnimation();
 }
 
 function buildNetworkPositions(W, H, data) {
   var nodes = data.nodes || [];
-  var edges = data.edges || [];
+  var degrees = {};
+  var edges = (data.edges || []).slice().sort(function(a, b) { return (b.similarity || 0) - (a.similarity || 0); }).filter(function(e) {
+    if ((degrees[e.source] || 0) >= 4 || (degrees[e.target] || 0) >= 4) return false;
+    degrees[e.source] = (degrees[e.source] || 0) + 1;
+    degrees[e.target] = (degrees[e.target] || 0) + 1;
+    return true;
+  });
   var positions = {};
   if (!nodes.length) return positions;
 
   var cx = W / 2, cy = H / 2;
-  var marginX = Math.max(42, W * 0.045);
-  var marginY = Math.max(34, H * 0.065);
-  var rx = Math.max(140, (W - marginX * 2) * 0.49);
-  var ry = Math.max(120, (H - marginY * 2) * 0.47);
+  // A world-sized layout: spacing grows with the number of memories, not the viewport.
   nodes.forEach(function(n, i) {
-    var angle = (i / nodes.length) * Math.PI * 2;
-    var jitter = ((i * 37) % 23) - 11;
-    positions[n.id] = {
-      x: cx + Math.cos(angle) * rx + jitter * 2.5,
-      y: cy + Math.sin(angle) * ry + jitter * 1.8,
-    };
+    var angle = i * Math.PI * (3 - Math.sqrt(5));
+    var radius = 76 * Math.sqrt(i);
+    positions[n.id] = { x: cx + Math.cos(angle) * radius, y: cy + Math.sin(angle) * radius };
   });
 
   for (var iter = 0; iter < 80; iter++) {
@@ -6964,7 +6995,7 @@ function buildNetworkPositions(W, H, data) {
         var a = positions[nodes[i].id], b = positions[nodes[j].id];
         var dx = b.x - a.x, dy = b.y - a.y;
         var dist = Math.max(1, Math.sqrt(dx*dx + dy*dy));
-        var force = 2400 / (dist * dist);
+        var force = Math.min(12, 4000 / (dist * dist) + Math.max(0, 100 - dist) * 0.18);
         dx = (dx / dist) * force;
         dy = (dy / dist) * force;
         a.x -= dx; a.y -= dy;
@@ -6985,13 +7016,60 @@ function buildNetworkPositions(W, H, data) {
     });
     nodes.forEach(function(n) {
       var p = positions[n.id];
-      p.x += (cx - p.x) * 0.0016;
-      p.y += (cy - p.y) * 0.0016;
-      p.x = Math.max(marginX, Math.min(W - marginX, p.x));
-      p.y = Math.max(marginY, Math.min(H - marginY, p.y));
+      p.x += (cx - p.x) * 0.0002;
+      p.y += (cy - p.y) * 0.0002;
     });
   }
+  // Resolve remaining collisions after springs settle, without squeezing the world.
+  var cells = {}, spacing = 80;
+  function available(x, y) {
+    var gx = Math.floor(x / spacing), gy = Math.floor(y / spacing);
+    for (var ax = gx - 1; ax <= gx + 1; ax++) for (var ay = gy - 1; ay <= gy + 1; ay++) {
+      if ((cells[ax + ':' + ay] || []).some(p => Math.hypot(p.x - x, p.y - y) < spacing)) return false;
+    }
+    return true;
+  }
+  nodes.forEach(function(n) {
+    var point = positions[n.id], originalX = point.x, originalY = point.y;
+    for (var attempt = 0; !available(point.x, point.y); attempt++) {
+      var angle = attempt * Math.PI * (3 - Math.sqrt(5));
+      var radius = 24 * Math.sqrt(attempt + 1);
+      point.x = originalX + Math.cos(angle) * radius;
+      point.y = originalY + Math.sin(angle) * radius;
+    }
+    var cell = Math.floor(point.x / spacing) + ':' + Math.floor(point.y / spacing);
+    (cells[cell] || (cells[cell] = [])).push(point);
+  });
   return positions;
+}
+
+function updateNetworkZoomLabel() {
+  var label = document.getElementById('network-zoom');
+  if (label) label.textContent = Math.round(networkState.view.scale * 100) + '%';
+}
+
+function zoomNetwork(factor, point) {
+  var view = networkState.view;
+  point = point || { x: networkState.width / 2, y: networkState.height / 2 };
+  var scale = Math.max(0.05, Math.min(4, view.scale * factor));
+  var ratio = scale / view.scale;
+  view.x = point.x - (point.x - view.x) * ratio;
+  view.y = point.y - (point.y - view.y) * ratio;
+  view.scale = scale;
+  hideNetworkPopover();
+  updateNetworkZoomLabel();
+}
+
+function resetNetworkView(fit) {
+  var points = Object.values(networkState.positions);
+  if (!points.length) return;
+  var xs = points.map(p => p.x), ys = points.map(p => p.y);
+  var left = Math.min(...xs) - 60, right = Math.max(...xs) + 60;
+  var top = Math.min(...ys) - 50, bottom = Math.max(...ys) + 50;
+  var scale = fit ? Math.min(1, networkState.width / (right - left), networkState.height / (bottom - top)) : 1;
+  networkState.view = { scale: scale, x: networkState.width / 2 - (left + right) / 2 * scale, y: networkState.height / 2 - (top + bottom) / 2 * scale };
+  hideNetworkPopover();
+  updateNetworkZoomLabel();
 }
 
 function buildNetworkEdgeMap(edges) {
@@ -7043,6 +7121,7 @@ function drawNetworkFrame(time) {
 
   ctx.save();
   ctx.translate(view.x, view.y);
+  ctx.scale(view.scale, view.scale);
   edges.forEach(function(e) {
     var a = positions[e.source], b = positions[e.target];
     if (!a || !b) return;
@@ -7053,7 +7132,7 @@ function drawNetworkFrame(time) {
     ctx.moveTo(a.x, a.y);
     ctx.lineTo(b.x, b.y);
     ctx.strokeStyle = isMemoryEdge
-      ? 'rgba(154, 123, 79, ' + (selectedEdge ? '0.30' : '0.14') + ')'
+      ? 'rgba(154, 123, 79, ' + (selectedEdge ? '0.50' : '0.07') + ')'
       : 'rgba(47, 79, 79, ' + ((e.similarity || 0.5) * (selectedEdge ? 0.08 : 0.035)) + ')';
     ctx.lineWidth = isMemoryEdge ? (selectedEdge ? 1.2 : 0.85) : Math.max(0.28, (e.similarity || 0.5) * 0.45);
     ctx.stroke();
@@ -7065,11 +7144,14 @@ function drawNetworkFrame(time) {
     }
   });
 
+  var labelBoxes = [];
   var colors = { dynamic: '#2F4F4F', permanent: '#9A7B4F', feel: '#8B6A6A', archived: '#B0A590' };
   nodes.forEach(function(n, i) {
     var p = positions[n.id];
     if (!p) return;
-    var r = NETWORK_NODE_RADIUS;
+    var r = NETWORK_NODE_RADIUS / Math.sqrt(view.scale);
+    var sx = p.x * view.scale + view.x, sy = p.y * view.scale + view.y;
+    if (sx < -100 || sy < -50 || sx > W + 100 || sy > H + 50) return;
     var color = colors[n.type] || '#2F4F4F';
     var isSelected = networkState.selectedId === n.id;
     var isDragging = networkState.drag && networkState.drag.type === 'node' && networkState.drag.node.id === n.id;
@@ -7106,13 +7188,19 @@ function drawNetworkFrame(time) {
       ctx.stroke();
     }
 
-    var degree = (networkState.edgeMap[n.id] || []).length;
-    if (nodes.length <= 45 || n.pinned || n.anchor || n.type === 'feel' || degree >= 2 || isSelected) {
-      var name = n.name.length > 10 ? n.name.slice(0, 10) + '…' : n.name;
+    if (view.scale >= 0.65 || n.pinned || n.anchor || isSelected) {
+      var name = String(n.name || n.id);
+      if (!isSelected && name.length > 14) name = name.slice(0, 14) + '…';
       ctx.fillStyle = isSelected ? '#2F4F4F' : '#3A3530';
-      ctx.font = isSelected ? '12px Inter, sans-serif' : '11px Inter, sans-serif';
+      ctx.font = (isSelected ? 12 : 11) / view.scale + 'px Inter, sans-serif';
       ctx.textAlign = 'center';
-      ctx.fillText(name, p.x, p.y + r + 14);
+      var width = ctx.measureText(name).width * view.scale;
+      var box = { x: sx - width / 2 - 4, y: sy + r * view.scale + 3, w: width + 8, h: 18 };
+      var overlaps = labelBoxes.some(b => box.x < b.x + b.w && box.x + box.w > b.x && box.y < b.y + b.h && box.y + box.h > b.y);
+      if (isSelected || !overlaps) {
+        ctx.fillText(name, p.x, p.y + r + 14 / view.scale);
+        labelBoxes.push(box);
+      }
     }
   });
   ctx.restore();
@@ -7151,6 +7239,10 @@ function bindNetworkCanvas(canvas) {
   canvas.addEventListener('pointermove', handleNetworkPointerMove);
   canvas.addEventListener('pointerup', handleNetworkPointerUp);
   canvas.addEventListener('pointercancel', handleNetworkPointerUp);
+  canvas.addEventListener('wheel', function(event) {
+    event.preventDefault();
+    zoomNetwork(Math.exp(-Math.max(-150, Math.min(150, event.deltaY)) * 0.004), networkPointer(event));
+  }, { passive: false });
   canvas.addEventListener('mouseleave', function() {
     if (!networkState.drag) canvas.style.cursor = 'grab';
   });
@@ -7170,8 +7262,8 @@ function findNetworkNodeAt(point) {
   nodes.forEach(function(n) {
     var p = positions[n.id];
     if (!p) return;
-    var dx = point.x - (p.x + view.x);
-    var dy = point.y - (p.y + view.y);
+    var dx = point.x - (p.x * view.scale + view.x);
+    var dy = point.y - (p.y * view.scale + view.y);
     var dist = Math.sqrt(dx * dx + dy * dy);
     if (dist <= NETWORK_NODE_RADIUS + 11 && dist < bestDist) {
       best = n;
@@ -7198,6 +7290,15 @@ function networkLinkedDragNodes(node) {
 function handleNetworkPointerDown(event) {
   if (event.button !== 0 && event.pointerType !== 'touch') return;
   var point = networkPointer(event);
+  networkState.pointers[event.pointerId] = point;
+  try { networkState.canvas.setPointerCapture(event.pointerId); } catch (e) {}
+  var fingers = Object.values(networkState.pointers);
+  if (fingers.length >= 2) {
+    networkState.drag = null;
+    networkState.pinch = { distance: Math.max(1, Math.hypot(fingers[1].x - fingers[0].x, fingers[1].y - fingers[0].y)), center: { x: (fingers[0].x + fingers[1].x) / 2, y: (fingers[0].y + fingers[1].y) / 2 } };
+    event.preventDefault();
+    return;
+  }
   var node = findNetworkNodeAt(point);
   var position = node ? networkState.positions[node.id] : null;
   networkState.drag = {
@@ -7221,7 +7322,20 @@ function handleNetworkPointerDown(event) {
 
 function handleNetworkPointerMove(event) {
   var point = networkPointer(event);
+  if (networkState.pointers[event.pointerId]) networkState.pointers[event.pointerId] = point;
+  var fingers = Object.values(networkState.pointers);
+  if (networkState.pinch && fingers.length >= 2) {
+    var distance = Math.max(1, Math.hypot(fingers[1].x - fingers[0].x, fingers[1].y - fingers[0].y));
+    var center = { x: (fingers[0].x + fingers[1].x) / 2, y: (fingers[0].y + fingers[1].y) / 2 };
+    zoomNetwork(distance / networkState.pinch.distance, networkState.pinch.center);
+    networkState.view.x += center.x - networkState.pinch.center.x;
+    networkState.view.y += center.y - networkState.pinch.center.y;
+    networkState.pinch = { distance: distance, center: center };
+    event.preventDefault();
+    return;
+  }
   var drag = networkState.drag;
+  if (drag && drag.pointerId !== event.pointerId) return;
   if (!drag) {
     networkState.canvas.style.cursor = findNetworkNodeAt(point) ? 'pointer' : 'grab';
     return;
@@ -7232,13 +7346,13 @@ function handleNetworkPointerMove(event) {
   if (drag.type === 'node' && drag.node) {
     var p = networkState.positions[drag.node.id];
     if (p) {
-      p.x = drag.nodeX + dx;
-      p.y = drag.nodeY + dy;
+      p.x = drag.nodeX + dx / networkState.view.scale;
+      p.y = drag.nodeY + dy / networkState.view.scale;
     }
     drag.linkedNodes.forEach(function(item) {
       networkState.linkedMotion[item.id] = {
-        targetX: item.x + dx * 0.55,
-        targetY: item.y + dy * 0.55,
+        targetX: item.x + dx / networkState.view.scale * 0.55,
+        targetY: item.y + dy / networkState.view.scale * 0.55,
       };
     });
   } else {
@@ -7249,6 +7363,14 @@ function handleNetworkPointerMove(event) {
 }
 
 function handleNetworkPointerUp(event) {
+  delete networkState.pointers[event.pointerId];
+  try { networkState.canvas.releasePointerCapture(event.pointerId); } catch (e) {}
+  if (networkState.pinch) {
+    networkState.pinch = null;
+    networkState.drag = null;
+    networkState.canvas.classList.remove('dragging');
+    return;
+  }
   var drag = networkState.drag;
   if (!drag) return;
   var point = networkPointer(event);
@@ -7256,7 +7378,7 @@ function handleNetworkPointerUp(event) {
   networkState.canvas.classList.remove('dragging');
   networkState.canvas.style.cursor = findNetworkNodeAt(point) ? 'pointer' : 'grab';
   try { networkState.canvas.releasePointerCapture(drag.pointerId); } catch (e) {}
-  if (drag.type === 'node' && drag.node && !drag.moved) {
+  if (event.type !== 'pointercancel' && drag.type === 'node' && drag.node && !drag.moved) {
     showNetworkPopover(drag.node, point.x, point.y);
   }
   event.preventDefault();
