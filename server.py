@@ -11120,6 +11120,37 @@ async def api_memory_review_scan(request):
         return JSONResponse({"error": str(exc)}, status_code=400)
 
 
+@mcp.custom_route("/api/memory-review/wake", methods=["POST"])
+async def api_memory_review_wake(request):
+    from pathlib import Path
+    from starlette.responses import JSONResponse
+    if not _authorized_memory_write(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid body")
+        batch_id = str(body.get("batch_id") or "")
+        if not re.fullmatch(r"[A-Za-z0-9_.:-]{1,180}", batch_id):
+            raise ValueError("invalid batch_id")
+        action = body.get("action", "reserve")
+        if action == "acknowledge":
+            await memory_review.wake_batch(batch_id, acknowledge=True)
+            return JSONResponse({"batch_id": batch_id, "acknowledged": True})
+        if action != "reserve":
+            raise ValueError("invalid action")
+        selected = await memory_review.wake_batch(batch_id)
+        items = [{"bucket_id": b["id"], "name": str(b["metadata"].get("name") or b["id"])[:120],
+                  "state": lifecycle_label(b), "preview": recent_ring_preview(b, bucket_content_for_recall(b))}
+                 for b in selected]
+        policy = Path(__file__).with_name("resources").joinpath("tarn-wake-review.txt").read_text().strip()
+        material = json.dumps(items, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+        context = policy + "\n\n" + material if items else ""
+        return JSONResponse({"batch_id": batch_id, "bucket_ids": [b["id"] for b in selected], "context": context})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
 @mcp.custom_route("/api/memory-review/{proposal_id}", methods=["GET", "POST"])
 async def api_memory_review_detail(request):
     from starlette.responses import JSONResponse

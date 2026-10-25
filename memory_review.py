@@ -8,7 +8,7 @@ import hashlib
 import json
 import os
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 import frontmatter
@@ -89,10 +89,43 @@ class MemoryReview:
             self.recover()
             raise
 
+    def reserved_ids(self, data):
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+        return {bid for batch in data.get('wake_batches', {}).values()
+                if not batch.get('delivered_at') and batch['reserved_at'] > cutoff
+                for bid in batch['ids']}
+
+    async def wake_batch(self, batch_id, *, acknowledge=False):
+        async with self.lock:
+            data = self.load()
+            batches = data.setdefault('wake_batches', {})
+            batch = batches.get(batch_id)
+            if acknowledge:
+                if not batch:
+                    raise ValueError('unknown wake batch')
+                if not batch.get('delivered_at'):
+                    batch['delivered_at'] = now()
+                    for bid in batch['ids']:
+                        data['seen'][bid] = batch['delivered_at']
+                    self.save(data)
+                return batch
+            if batch is None:
+                reserved = self.reserved_ids(data)
+                buckets = await self.manager.list_all(include_archive=False)
+                candidates = [b for b in buckets if eligible(b) and b['id'] not in reserved]
+                candidates.sort(key=lambda b: (data['seen'].get(b['id'], ''), b['metadata'].get('created', ''), b['id']))
+                batch = {'ids': [b['id'] for b in candidates[:3]], 'reserved_at': now()}
+                batches[batch_id] = batch
+                self.save(data)
+            # A retry keeps its original IDs; never silently reserves another batch.
+            selected = [await self.manager.get(bid) for bid in batch['ids']]
+            return [b for b in selected if b and eligible(b)]
+
     async def rotate(self, buckets, limit=3):
         async with self.lock:
             data = self.load()
-            candidates = [b for b in buckets if eligible(b)]
+            reserved = self.reserved_ids(data)
+            candidates = [b for b in buckets if eligible(b) and b['id'] not in reserved]
             candidates.sort(key=lambda b: (data['seen'].get(b['id'], ''), b['metadata'].get('created', ''), b['id']))
             selected = candidates[:max(1, min(int(limit), 5))]
             stamp = now()
