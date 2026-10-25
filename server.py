@@ -11124,8 +11124,9 @@ async def api_memory_review_scan(request):
 async def api_memory_review_wake(request):
     from pathlib import Path
     from starlette.responses import JSONResponse
-    if not _authorized_memory_write(request):
-        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    err = _require_raw_api_auth(request)
+    if err:
+        return err
     try:
         body = await request.json()
         if not isinstance(body, dict):

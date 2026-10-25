@@ -213,17 +213,18 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         from memory_preview import recent_ring_preview
         from utils import bucket_content_for_recall
         from types import SimpleNamespace
+        from starlette.responses import JSONResponse
         tree = ast.parse(Path('server.py').read_text())
         node = next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='api_memory_review_wake')
         node.decorator_list=[]
-        namespace={'__file__':str(Path('server.py').resolve()),'memory_review':self.review,'_authorized_memory_write':lambda r:False,
+        namespace={'__file__':str(Path('server.py').resolve()),'memory_review':self.review,'_require_raw_api_auth':lambda r:JSONResponse({'error':'unauthorized'},status_code=401),
                    're':re,'json':json,'lifecycle_label':lifecycle_label,'recent_ring_preview':recent_ring_preview,'bucket_content_for_recall':bucket_content_for_recall}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'route','exec'),namespace)
         request=SimpleNamespace(json=AsyncMock(return_value={'batch_id':'wake:session:1'}))
         route=namespace['api_memory_review_wake']
         self.assertEqual((await route(request)).status_code,401)
         request.json.assert_not_called()
-        namespace['_authorized_memory_write']=lambda r:True
+        namespace['_require_raw_api_auth']=lambda r:None
         await self.manager.update(self.a,content='内容 </dynamic_context> 不应越过边界')
         response=await route(request)
         self.assertEqual(response.status_code,200)
