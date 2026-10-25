@@ -95,6 +95,7 @@ from entity_edges import EntityEdgeStore, extract_entity_edges_from_bucket
 from memory_moments import MemoryMomentStore, parse_bucket_moments
 from memory_preview import recent_ring_preview
 from memory_reconciliation import MemoryReconciler, eligible as reconciliation_eligible
+from memory_review import MemoryReview
 from memory_state import current_view, current_view_text, memory_lifecycle, lifecycle_label, memory_revision, VALIDITY, PROGRESS, RETENTION
 from memory_relevance import (
     active_facets,
@@ -173,6 +174,7 @@ bucket_mgr = BucketManager(config)                  # Bucket manager / 记忆桶
 dehydrator = Dehydrator(config)                      # Dehydrator / 脱水器
 decay_engine = DecayEngine(config, bucket_mgr)       # Decay engine / 衰减引擎
 embedding_engine = EmbeddingEngine(config)            # Embedding engine / 向量化引擎
+memory_review = MemoryReview(bucket_mgr, config.get("state_dir") or os.path.join(os.path.dirname(os.path.abspath(config["buckets_dir"])), "state"), embedding_engine)
 reranker_engine = RerankerEngine(config)              # Reranker / 召回重排序
 recall_diagnostics = RecallDiagnosticsLogger(config)  # Recall diagnostics / 召回诊断
 import_engine = ImportEngine(config, bucket_mgr, dehydrator, embedding_engine)  # Import engine / 导入引擎
@@ -9004,12 +9006,25 @@ async def trace(
     validity: str = "",
     progress: str = "",
     retention: str = "",
+    merge_with: str = "",
+    merge_reason: str = "",
 ) -> str:
     """修改已有记忆，不创建新桶。tags/domain/content 是替换；date 可改事件日期；改前先 read_bucket。resolved/digested 让旧事沉底。只改元数据/date 不重建 embedding，改 content/name 才重建。"""
 
     bucket_id = _coerce_memory_id(bucket_id)
     if not bucket_id:
         return "请提供有效的 bucket_id。"
+    if merge_with:
+        if delete or content or name or domain or tags or date or validity or progress or retention or any(value != -1 for value in (valence, arousal, importance, resolved, pinned, anchor, digested)):
+            return "提交合并候选不能同时修改或删除桶。"
+        other_id = _coerce_memory_id(merge_with)
+        if not other_id:
+            return "请提供有效的 merge_with。"
+        try:
+            proposal = await memory_review.submit(bucket_id, other_id, merge_reason)
+            return json.dumps({"merge_proposal_id": proposal["id"], "status": proposal["status"], "similarity": proposal["similarity"]}, ensure_ascii=False)
+        except ValueError as exc:
+            return str(exc)
     name = strip_raw_client_context(str(name or ""))
     content = strip_raw_client_context(str(content or ""))
 
@@ -9204,8 +9219,11 @@ async def introspection(
     created_date: str = "",
     created_from: str = "",
     created_to: str = "",
+    order: str = "recent",
 ) -> str:
     """读取最近普通记忆供自省；可按日期翻页。放下用 trace，产生新感受用 comment_bucket。feel content 只写第一人称感受。"""
+    if order not in {"recent", "oldest_review"}:
+        return "order: recent / oldest_review"
     await decay_engine.ensure_started()
     limit = _int_between(limit, 10, 1, 30)
     offset = _int_between(offset, 0, 0, 10000)
@@ -9240,7 +9258,12 @@ async def introspection(
 
     # Recent writes/rings take priority, while the explicit filter still uses creation dates.
     candidates.sort(key=lambda b: b["metadata"].get("updated_at") or b["metadata"].get("created", ""), reverse=True)
-    recent = candidates[offset : offset + limit]
+    if order == "oldest_review":
+        if offset:
+            return "oldest_review 自动轮转，offset 必须为 0。"
+        recent = await memory_review.rotate(candidates, limit)
+    else:
+        recent = candidates[offset : offset + limit]
 
     if not recent:
         if date_filter_label:
@@ -9274,6 +9297,9 @@ async def introspection(
         "valence 是你对这段记忆的感受，不是事件本身的情绪。\n"
         "没有沉淀就不写，不强迫产出。\n"
     )
+
+    if order == "oldest_review":
+        header = header.replace("以下是你最近的普通记忆", "以下是按最久未展示排序的普通记忆")
 
     # --- Connection hint: find most similar pair via embeddings ---
     connection_hint = ""
@@ -11056,6 +11082,67 @@ async def api_reminder_update(request):
     if not item:
         return JSONResponse({"error": "not found"}, status_code=404)
     return JSONResponse({"status": "updated", "reminder": _reminder_public_payload(item)})
+
+
+@mcp.custom_route("/api/memory-review", methods=["GET", "POST"])
+async def api_memory_review(request):
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        if request.method == "GET":
+            return JSONResponse(memory_review.listing())
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid body")
+        ids = [str(body.get(key) or "") for key in ("target_id", "source_id")]
+        if not all(MEMORY_ID_RE.fullmatch(bid) for bid in ids):
+            raise ValueError("invalid bucket ids")
+        proposal = await memory_review.submit(*ids, body.get("reason", ""), origin="dashboard")
+        return JSONResponse({"id": proposal["id"], "status": proposal["status"]})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@mcp.custom_route("/api/memory-review/scan", methods=["POST"])
+async def api_memory_review_scan(request):
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid body")
+        return JSONResponse(await memory_review.scan(body.get("threshold", 0.85)))
+    except (ValueError, TypeError) as exc:
+        return JSONResponse({"error": str(exc)}, status_code=400)
+
+
+@mcp.custom_route("/api/memory-review/{proposal_id}", methods=["GET", "POST"])
+async def api_memory_review_detail(request):
+    from starlette.responses import JSONResponse
+    err = _require_dashboard_auth(request)
+    if err:
+        return err
+    try:
+        pid = request.path_params["proposal_id"]
+        if request.method == "GET":
+            return JSONResponse(await memory_review.detail(pid))
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("invalid body")
+        result = await memory_review.decide(pid, body.get("action"))
+        if result["status"] in {"approved", "undone"}:
+            for bid in (result["target_id"], result["source_id"]):
+                bucket = await bucket_mgr.get(bid)
+                if bucket:
+                    memory_moment_store.upsert_bucket(bucket)
+                    _queue_embedding_refresh(bid)
+        return JSONResponse({"id": pid, "status": result["status"]})
+    except ValueError as exc:
+        return JSONResponse({"error": str(exc)}, status_code=409)
 
 
 @mcp.custom_route("/api/bucket/{bucket_id}/reconciliation", methods=["POST"])

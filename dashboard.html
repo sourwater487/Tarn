@@ -2832,6 +2832,7 @@
 
 <div class="tabs">
   <div class="tab active" data-tab="list">记忆桶</div>
+  <div class="tab" data-tab="memory-review">合并审批</div>
   <div class="tab" data-tab="todos">照顾备忘</div>
   <div class="tab" data-tab="breath">Breath 模拟</div>
   <div class="tab" data-tab="reflection">日印象</div>
@@ -2873,6 +2874,7 @@
   </div>
 </div>
 
+<section class="content" id="memory-review-view" style="display:none"></section>
 <div class="content" id="todo-view" style="display:none">
   <div class="todo-shell">
     <div class="todo-toolbar">
@@ -3981,6 +3983,8 @@ document.querySelectorAll('.tab').forEach(tab => {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     tab.classList.add('active');
     const target = tab.dataset.tab;
+    document.getElementById('memory-review-view').style.display = target === 'memory-review' ? '' : 'none';
+    if (target === 'memory-review' && window.loadMemoryReview) window.loadMemoryReview();
     document.getElementById('list-view').style.display = target === 'list' ? '' : 'none';
     document.getElementById('todo-view').style.display = target === 'todos' ? '' : 'none';
     document.getElementById('breath-view').style.display = target === 'breath' ? '' : 'none';
@@ -9173,6 +9177,7 @@ function loadDashboardModule(path) {
 }
 
 loadDashboardModule('/dashboard-assets/chat-memory.js?v=20260706-chat-memory-edit');
+loadDashboardModule('/dashboard-assets/memory-review.js?v=20261025');
 </script>
 </body>
 </html>

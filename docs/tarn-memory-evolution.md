@@ -37,3 +37,13 @@ The authenticated `POST /api/bucket/{id}/reconciliation` endpoint returns a read
 ### Verification
 
 `test_memory_reconciliation.py` covers real temporary Markdown writes, deduplication, retained history, source validation, concurrent changes, expiry, independent lifecycle dimensions, and reflection binding. `scripts/verify_tarn_model.py` is an opt-in check against the configured secondary API using synthetic examples and a temporary cache; it does not write production memory.
+
+## Human merge review and old-memory rotation
+
+The dashboard now has a merge review queue with complete sources, a deterministic preview, cached-vector cosine similarity, approve/reject/defer, and guarded undo. Existing `trace` accepts `merge_with` / `merge_reason`; existing `introspection` accepts `order="oldest_review"` (1–5 items), while the default recent view remains compatible. No MCP tool names or fixed model instructions are added.
+
+Rotation timestamps and proposals live in the existing persistent state directory, in `memory-review.json`, separate from bucket activation and update timestamps. Exact source fingerprints suppress duplicate rejected proposals and reject stale approvals. A write-ahead journal and atomic file replacements restore interrupted merges before the service accepts more requests. Source records and rings remain available; merged sources use the existing digested flag to leave automatic recall. Index refresh happens only after approval or undo, never for rejection/defer. Undo is blocked if meaningful content or metadata has changed since approval.
+
+The optional dashboard scan uses existing embeddings only, queues up to 30 pairs per invocation, and does not call another model or merge automatically. Heartbeat delivery and any new fixed explanation remain pending Lin's confirmation.
+
+Validation includes isolated temporary-bucket merge/undo, source edits, concurrent approvals, failure rollback, restart recovery, rejected-pair suppression, vector scanning, route authentication, and mobile/desktop dashboard interactions in both appearances. Tests never merge production buckets.
