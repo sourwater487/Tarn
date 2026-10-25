@@ -7,7 +7,8 @@
 | 目的 | 工具 |
 | --- | --- |
 | 按主题查记忆 | `breath(query="关键词")` |
-| 浏览近期普通记忆 | `introspection(limit=10, offset=0)`，按需翻页 |
+| 轮转旧桶 | `introspection()`，默认最多 3 条，自动记录展示时间 |
+| 浏览近期普通记忆 | `introspection(order="recent", limit=10, offset=0)`，按需翻页 |
 | 按 ID 读完整记忆 | `read_bucket(bucket_id="…")` |
 | 查看系统摘要 | `pulse()`；包含归档可用 `include_archive=True` |
 | 获取轻量索引 | `list_buckets_light`，不含正文，可分页 |
@@ -18,7 +19,7 @@
 
 预览没显示某件事，不代表它没有记录。遇到截断提示、可能遗漏的信息，或准备补写所谓“缺失信息”时，先读取完整桶。
 
-`introspection` 按最近更新优先展示，但日期筛选参数 `created_date`、`created_from`、`created_to` 筛的是创建日期；它不是全库索引，不能据此判断某条记忆不存在。
+`introspection()` 默认按最久未展示轮转旧桶，`order="recent"` 才按最近更新优先展示。为保护现有聊天缓存，对外工具 schema 和描述暂保留旧值；省略参数时的实际行为以这里为准。日期筛选参数 `created_date`、`created_from`、`created_to` 筛的是创建日期；它不是全库索引，不能据此判断某条记忆不存在。
 
 ## 选择写入工具
 

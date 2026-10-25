@@ -9214,18 +9214,18 @@ async def pulse(include_archive: bool = False) -> str:
 # =============================================================
 @mcp.tool()
 async def introspection(
-    limit: int = 10,
+    limit: int = 3,
     offset: int = 0,
     created_date: str = "",
     created_from: str = "",
     created_to: str = "",
-    order: str = "recent",
+    order: str = "oldest_review",
 ) -> str:
     """读取最近普通记忆供自省；可按日期翻页。放下用 trace，产生新感受用 comment_bucket。feel content 只写第一人称感受。"""
     if order not in {"recent", "oldest_review"}:
         return "order: recent / oldest_review"
     await decay_engine.ensure_started()
-    limit = _int_between(limit, 10, 1, 30)
+    limit = _int_between(limit, 3, 1, 30)
     offset = _int_between(offset, 0, 0, 10000)
     date_args = {
         "created_date": created_date,
@@ -9261,6 +9261,7 @@ async def introspection(
     if order == "oldest_review":
         if offset:
             return "oldest_review 自动轮转，offset 必须为 0。"
+        limit = min(limit, 5)
         recent = await memory_review.rotate(candidates, limit)
     else:
         recent = candidates[offset : offset + limit]
@@ -9366,6 +9367,15 @@ async def introspection(
     profile_hint = _profile_fact_candidate_hint(recent, all_buckets)
 
     return header + "\n---\n".join(parts) + connection_hint + crystal_hint + profile_hint
+
+
+# Keep the published descriptor byte-compatible with existing provider tool caches.
+# FastMCP keeps this JSON schema separate from its argument validation model:
+# omitted arguments execute the new Python defaults; explicit recent still works.
+# Do not update the description/schema without coordinating a future cache refresh.
+_introspection_schema = mcp._tool_manager.get_tool("introspection").parameters
+_introspection_schema["properties"]["limit"]["default"] = 10
+_introspection_schema["properties"]["order"]["default"] = "recent"
 
 
 PROFILE_FACT_CANDIDATE_PATTERN_SPECS = (

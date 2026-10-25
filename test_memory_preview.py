@@ -79,7 +79,7 @@ class IntrospectionRegression(unittest.IsolatedAsyncioTestCase):
             "_profile_fact_candidate_hint": lambda *args: "",
         }
         exec(compile(ast.Module(body=[fn], type_ignores=[]), "introspection-test", "exec"), namespace)
-        text = await namespace["introspection"]()
+        text = await namespace["introspection"](order="recent")
         self.assertIn("Jellycat", text)
         self.assertIn("USB", text)
         self.assertIn("560", text)
