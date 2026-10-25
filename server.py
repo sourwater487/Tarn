@@ -9287,20 +9287,39 @@ async def introspection(
             f"{recent_ring_preview(b, bucket_content_for_recall(b))}"
         )
 
-    header = (
-        "=== Introspection ===\n"
-        f"以下是你最近的普通记忆（offset={offset}, limit={limit}{date_filter_label}）。用第一人称想：\n"
-        "- 这些东西里有什么在你这里留下了重量？\n"
-        "- 有什么还没想清楚？\n"
-        "- 有什么可以放下了？\n"
-        "想完之后：值得放下的用 trace(bucket_id, resolved=1)；\n"
-        "有沉淀的用 comment_bucket(bucket_id=\"bucket_id\", content=\"...\", kind=\"feel\", valence=你的感受) 写成年轮；content 只写第一人称感受，不补事件，不写分段标题。\n"
-        "valence 是你对这段记忆的感受，不是事件本身的情绪。\n"
-        "没有沉淀就不写，不强迫产出。\n"
-    )
-
     if order == "oldest_review":
-        header = header.replace("以下是你最近的普通记忆", "以下是按最久未展示排序的普通记忆")
+        introduction = (
+            "以下是本次按最久未展示顺序轮到回看的普通记忆。\n"
+            "本次展示时间已自动记录。\n"
+        )
+    else:
+        introduction = (
+            f"以下是按最近更新时间展示的普通记忆（offset={offset}, limit={limit}{date_filter_label}）。\n"
+        )
+    header = "=== Introspection ===\n" + introduction + """
+你可以核对记忆的当前情况，也可以自由想一想：
+- 哪些事情已经结束，哪些信息已被后来的情况替代？
+- 这些记忆之间有没有可能重复、值得交给 Lin 看看的地方？
+- 有什么仍在你这里留下重量，或者还没有想清楚？
+
+判断或修改前，先用 read_bucket 核对完整正文和年轮。
+预览优先展示当前情况或最近年轮，可能有截断；不只凭预览、时间久远或相似度下结论。
+
+确认需要调整时：
+- 事情已经结束：trace(bucket_id="...", progress="ended")。
+- 信息已被替代：trace(bucket_id="...", validity="superseded")。
+- 如果是你自己决定放下这段记忆，可用 trace(bucket_id="...", resolved=1)；
+  不必因为事情结束，就把记忆一起放下。
+- 疑似重复：trace(bucket_id="目标桶ID", merge_with="来源桶ID", merge_reason="具体理由")。
+  这只提交合并候选，等待 Lin 在 Tarn 审批，不会直接合并。
+  提交合并候选时，不在同一次调用中修改其他字段。
+
+如果自然产生了新的感受，可以用 comment_bucket 写年轮。
+content 只写第一人称感受，不补事件，不写分段标题；
+valence 表示你对这段记忆的感受，不是事件本身的情绪。
+
+可以只看，不修改，也不写感受。不需要为了完成回看而产出内容。
+"""
 
     # --- Connection hint: find most similar pair via embeddings ---
     connection_hint = ""
