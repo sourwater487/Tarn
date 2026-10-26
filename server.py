@@ -9022,7 +9022,7 @@ async def trace(
             return "请提供有效的 merge_with。"
         try:
             proposal = await memory_review.submit(bucket_id, other_id, merge_reason)
-            return json.dumps({"merge_proposal_id": proposal["id"], "status": proposal["status"], "similarity": proposal["similarity"]}, ensure_ascii=False)
+            return _json_lib.dumps({"merge_proposal_id": proposal["id"], "status": proposal["status"], "similarity": proposal["similarity"]}, ensure_ascii=False)
         except ValueError as exc:
             return str(exc)
     name = strip_raw_client_context(str(name or ""))
@@ -11174,7 +11174,7 @@ async def api_memory_review_wake(request):
                   "state": lifecycle_label(b), "preview": recent_ring_preview(b, bucket_content_for_recall(b))}
                  for b in selected]
         policy = Path(__file__).with_name("resources").joinpath("tarn-wake-review.txt").read_text().strip()
-        material = json.dumps(items, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+        material = _json_lib.dumps(items, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
         context = policy + "\n\n" + material if items else ""
         return JSONResponse({"batch_id": batch_id, "bucket_ids": [b["id"] for b in selected], "context": context})
     except ValueError as exc:

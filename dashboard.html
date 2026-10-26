@@ -6049,7 +6049,7 @@ function buildFilters() {
     { key: 'anchor', label: '⊙ Anchor' },
     { key: 'feel', label: 'Feel' },
     { key: 'daily_impression', label: '日印象' },
-    { key: 'unresolved', label: '⚡ 可浮现' },
+    { key: 'unresolved', label: 'ϟ 可浮现' },
     { key: 'digested', label: '⌁ 已消化' },
     { key: 'archived', label: '▣ 归档' },
     { key: 'tag:self_anchor', label: '自我' },
@@ -6154,7 +6154,7 @@ function updateBucketSortToggle() {
   if (!btn) return;
   var isWeight = bucketSortMode === 'weight';
   var direction = bucketSortDescending ? '↓' : '↑';
-  btn.innerHTML = '<span class="sort-mode-symbol">' + (isWeight ? '◆' : '⏱') + '</span><span class="sort-direction">' + direction + '</span>';
+  btn.innerHTML = '<span class="sort-mode-symbol">' + (isWeight ? '◆' : '◷') + '</span><span class="sort-direction">' + direction + '</span>';
   btn.title = isWeight ? '按权重倒序，点击切换为创建时间倒序' : '按创建时间倒序，点击切换为权重倒序';
   btn.setAttribute('aria-label', btn.title);
 }
@@ -9105,7 +9105,7 @@ async function loadImportResults() {
         <div style="display:flex;gap:8px;">
           <button onclick="reviewAction('${safeId}','pin')" title="固定为永久记忆">◇ 固定</button>
           <button onclick="reviewAction('${safeId}','anchor')" title="标为长期锚点">⊙ Anchor</button>
-          <button onclick="reviewAction('${safeId}','important')" title="标为重要">⭐ 重要</button>
+          <button onclick="reviewAction('${safeId}','important')" title="标为重要">◆ 重要</button>
           <button onclick="reviewAction('${safeId}','noise')" title="标为噪声并resolve">× 噪声</button>
           <button onclick="if(confirm('确定删除？'))reviewAction('${safeId}','delete')" title="彻底删除" style="color:var(--negative);">✕ 删除</button>
         </div>
@@ -9137,7 +9137,7 @@ async function detectPatterns() {
         <div style="display:flex;gap:8px;">
           <button onclick="reviewAction('${firstId}','pin')">◇ 固定</button>
           <button onclick="reviewAction('${firstId}','anchor')">⊙ Anchor</button>
-          <button onclick="reviewAction('${firstId}','important')">⭐ 重要</button>
+          <button onclick="reviewAction('${firstId}','important')">◆ 重要</button>
           <button onclick="batchReview('${idsJson}','noise')">× 噪声</button>
         </div>
       </div>

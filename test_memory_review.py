@@ -23,6 +23,29 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
     async def proposal(self):
         return await self.review.submit(self.a, self.b, '同一玩偶的后续记录')
 
+    async def test_trace_merge_uses_actual_module_json_import(self):
+        import json
+        tree = ast.parse(Path('server.py').read_text())
+        fn = next(n for n in tree.body if isinstance(n, ast.AsyncFunctionDef) and n.name == 'trace')
+        fn.decorator_list = []
+        imports = [n for n in tree.body if isinstance(n, ast.Import) and any(a.name == 'json' for a in n.names)]
+        namespace = {'memory_review': self.review, '_coerce_memory_id': lambda value: value}
+        exec(compile(ast.Module(body=[*imports, fn], type_ignores=[]), 'trace-test', 'exec'), namespace)
+        result = json.loads(await namespace['trace'](self.a, merge_with=self.b, merge_reason='重复'))
+        self.assertEqual(result['status'], 'pending')
+        self.assertIn(result['merge_proposal_id'], self.review.load()['proposals'])
+
+    async def test_resubmit_changed_source_replaces_old_pending_proposal(self):
+        old = await self.proposal()
+        await self.manager.add_comment(self.b, '新年轮')
+        self.assertTrue((await self.review.detail(old['id']))['stale'])
+        fresh = await self.proposal()
+        self.assertNotEqual(old['id'], fresh['id'])
+        self.assertEqual(self.review.load()['proposals'][old['id']]['replacement_id'], fresh['id'])
+        self.assertEqual(self.review.load()['proposals'][old['id']]['status'], 'invalidated')
+        self.assertFalse((await self.review.detail(fresh['id']))['stale'])
+        await self.review.decide(fresh['id'], 'approve')
+
     async def test_rotation_persists_without_touching_buckets(self):
         before = await self.manager.list_all()
         first, second = await asyncio.gather(self.review.rotate(before, 1), self.review.rotate(before, 1))
@@ -233,7 +256,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         node = next(n for n in tree.body if isinstance(n,ast.AsyncFunctionDef) and n.name=='api_memory_review_wake')
         node.decorator_list=[]
         namespace={'__file__':str(Path('server.py').resolve()),'memory_review':self.review,'_require_raw_api_auth':lambda r:JSONResponse({'error':'unauthorized'},status_code=401),
-                   're':re,'json':json,'lifecycle_label':lifecycle_label,'recent_ring_preview':recent_ring_preview,'bucket_content_for_recall':bucket_content_for_recall}
+                   're':re,'_json_lib':json,'lifecycle_label':lifecycle_label,'recent_ring_preview':recent_ring_preview,'bucket_content_for_recall':bucket_content_for_recall}
         exec(compile(ast.Module(body=[node],type_ignores=[]),'route','exec'),namespace)
         request=SimpleNamespace(json=AsyncMock(return_value={'batch_id':'wake:session:1'}))
         route=namespace['api_memory_review_wake']

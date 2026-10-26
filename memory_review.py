@@ -162,6 +162,12 @@ class MemoryReview:
                  'reason': str(reason).strip(), 'origin': origin, 'created': now(), 'status': 'pending',
                  'similarity': score, 'revisions': revisions,
                  'names': [b['metadata'].get('name') or b['id'] for b in buckets]}
+            for previous in data['proposals'].values():
+                if (previous['status'] in {'pending', 'deferred'}
+                        and set(previous['revisions']) == set(revisions)
+                        and previous['revisions'] != revisions):
+                    previous.update(status='invalidated', invalid_reason='已按最新源桶重新提交',
+                                    replacement_id=p['id'], decided_at=now())
             data['proposals'][p['id']] = p
             self.save(data)
             return p

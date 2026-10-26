@@ -5,6 +5,7 @@
   let filter = 'pending';
   let selected = '';
   let busy = false;
+  let currentProposal = null;
   const text = value => esc(String(value ?? ''));
   const score = value => typeof value === 'number' ? value.toFixed(3) : '暂无';
   const style = document.createElement('style');
@@ -73,12 +74,13 @@
     try {
       const p = await api('/' + encodeURIComponent(id));
       if (selected !== id) return;
+      currentProposal = p;
       const pending = ['pending','deferred'].includes(p.status);
       panel.innerHTML = '<button data-action="back">← 候选列表</button><h2>' + text(p.names.join(' ⇄ ')) + '</h2><div class="review-meta">' + text(labels[p.status]) + ' · 向量余弦相似度 ' + score(p.similarity) + '</div><p>' + text(p.reason) + '</p>' +
-        (pending && p.stale ? '<p role="alert">源桶已有变化，此候选不能批准。请重新提交并核对。</p>' : '') +
+        (pending && p.stale ? '<p role="alert">提交后，源桶的正文、年轮或属性已有变化，旧版本不能直接批准。请按最新内容重新提交，再核对结果。</p>' : '') +
         (p.invalid_reason ? '<p role="status">' + text(p.invalid_reason) + '，此工单已退出审批。</p>' : '') + '<div class="review-columns">' + bucketView(p.buckets[0], '待合并 A · 保留 ID 与状态') + bucketView(p.buckets[1], '待合并 B · 并入 A，原桶退出自动浮现') + '</div>' +
         (p.preview ? '<h3>合并后预览</h3><p class="review-notice">保留目标桶正文与状态，并入另一桶正文和年轮作为来源。当前情况仅去掉完全相同的条目，不自动判断冲突事实。</p>' + bucketView(p.preview, '最终合并结果 · 保留正文与合并年轮', true) + '<details><summary>当前情况的来源依据</summary><pre>' + text(JSON.stringify(p.preview.metadata.tarn_view.facts, null, 2)) + '</pre></details>' : '') +
-        '<div class="review-toolbar">' + (pending ? '<button data-action="approve" '+(p.stale?'disabled':'')+'>批准这个合并结果</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
+        '<div class="review-toolbar">' + (pending ? (p.stale && p.buckets.every(Boolean) ? '<button data-action="resubmit">按最新内容重新提交并核对</button>' : '') + '<button data-action="approve" '+(p.stale?'disabled':'')+'>批准这个合并结果</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
     } catch(e) {error(e.message);}
   }
   panel.addEventListener('change', e => {if(e.target.id === 'review-filter') {filter=e.target.value;load();}});
@@ -94,6 +96,17 @@
       const threshold = Number(panel.querySelector('#review-threshold').value);
       try {const result = await api('/scan', {threshold});await load();error('已检查 ' + result.with_vectors + ' 个有向量的桶，新增 ' + result.created + ' 组候选（每次最多 30 组）。');}
       catch(e) {error(e.message);button.disabled = false;}
+      finally {busy = false;}
+      return;
+    }
+    if (action === 'resubmit' && currentProposal) {
+      busy = true;
+      button.disabled = true;
+      const p = currentProposal;
+      try {
+        const updated = await api('', {target_id:p.target_id, source_id:p.source_id, reason:p.reason});
+        await detail(updated.id);
+      } catch(e) {error(e.message);button.disabled = false;}
       finally {busy = false;}
       return;
     }
