@@ -10,7 +10,7 @@
   const score = value => typeof value === 'number' ? value.toFixed(3) : '暂无';
   const style = document.createElement('style');
   style.textContent = `
-    #memory-review-view {max-width:1120px;margin:0 auto;padding:28px 24px 80px;font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+    #memory-review-view {max-width:1120px;margin:0 auto;padding:28px 24px 80px;font-family:inherit;}
     #memory-review-view h2,#memory-review-view h3 {font-family:inherit;overflow-wrap:anywhere;}
     #memory-review-view .review-toolbar {display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin:18px 0;}
     #memory-review-view button,#memory-review-view select,#memory-review-view input {font:inherit;color:var(--text);background:var(--surface,transparent);border:1px solid var(--border,#aaa5);border-radius:7px;padding:10px 12px;min-height:44px;}
@@ -42,10 +42,8 @@
   function bucketView(bucket, title, result = false) {
     if (!bucket) return '<article>源桶已不存在</article>';
     const meta = bucket.metadata || {};
-    const view = bucket.current_view_valid === false ? null : meta.tarn_view;
     return '<article class="' + (result ? 'review-result' : 'review-source') + '"><div class="review-meta"><span class="review-marker" aria-hidden="true"></span>' + text(title) + '</div><h3>' + text(meta.name || bucket.id) + '</h3>' +
       '<div class="review-meta">' + text(bucket.id) + '</div>' +
-      (!result && view ? '<details><summary>当前情况</summary><pre>' + text((view.facts || []).map(f => f.text).join('\n\n')) + '</pre></details>' : '') +
       '<details open><summary>桶正文</summary><pre>' + text(bucket.content) + '</pre></details>' +
       '<details><summary>状态</summary><pre>' + text(state(bucket)) + '</pre></details>' +
       '<details open><summary>完整年轮 · ' + (meta.comments || []).length + '</summary>' +
