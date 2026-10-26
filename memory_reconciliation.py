@@ -53,7 +53,7 @@ def sources_for(bucket):
     bid = bucket["id"]
     meta = bucket.get("metadata", {})
     sources = [{"source_id": bid + ":body", "bucket_id": bid, "kind": "body", "text": bucket.get("content", ""), "date": meta.get("date", ""), "created": meta.get("created", "")}]
-    for index, ring in enumerate(meta.get("comments") or []):
+    for index, ring in enumerate([*(meta.get("comments") or []), *([] if meta.get("merge_content_version") else meta.get("merge_originals") or [])]):
         if isinstance(ring, dict) and str(ring.get("content") or "").strip():
             sources.append({"source_id": ring.get("source_id") or bid + ":ring:" + str(ring.get("id") or index), "bucket_id": bid,
                             "kind": ring.get("kind", "comment"), "text": ring["content"], "created": ring.get("created", ""), "date": ring.get("date", "")})

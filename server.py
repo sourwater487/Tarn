@@ -185,6 +185,7 @@ memory_node_store = MemoryNodeStore(config)            # Computable memory node 
 memory_moment_store = MemoryMomentStore(config)        # Structured bucket body/comment moment index / 记忆片段索引
 memory_write_gate = MemoryWriteGate(config)            # Automatic grow gate / 自动写入门卫
 memory_reconciler = MemoryReconciler(bucket_mgr, lambda: dehydrator)
+memory_review.reconciler = memory_reconciler
 _reconciliation_tasks = {}
 _reconciliation_dirty = set()
 _embedding_refresh_locks = {}
@@ -2504,8 +2505,13 @@ async def _auto_generate_write_moment_if_needed(
     return content
 
 
-def _bucket_read_payload(bucket: dict) -> dict:
-    meta = bucket.get("metadata", {})
+def _bucket_read_payload(bucket: dict, *, include_history=False) -> dict:
+    meta = dict(bucket.get("metadata", {}))
+    legacy_sources = [r for r in meta.get("comments", []) if isinstance(r, dict) and r.get("kind") == "merge_source"]
+    meta["comments"] = [r for r in meta.get("comments", []) if isinstance(r, dict) and r.get("kind") != "merge_source"]
+    meta["comment_count"] = len(meta["comments"])
+    if include_history:
+        meta["merge_originals"] = [*(meta.get("merge_originals") or []), *legacy_sources]
     metadata_view = normalize_memory_metadata(bucket)
     fields = [
         "id",
@@ -2534,6 +2540,7 @@ def _bucket_read_payload(bucket: dict) -> dict:
         "activation_count",
         "comment_count",
         "comments",
+        *(["merge_originals", "merge_sources"] if include_history else []),
         "profile_kind",
         "subject",
         "predicate",
@@ -2552,10 +2559,10 @@ def _bucket_read_payload(bucket: dict) -> dict:
         "metadata_view": metadata_view,
         **metadata_view,
         "content": strip_wikilinks(bucket.get("content", "")),
-        "current_view": current_view(bucket),
+        "current_view": {} if meta.get("merge_content_version") and not include_history else current_view(bucket),
         "related_memories": [item for item in [meta.get("tarn_related"), *(meta.get("tarn_conflicts") or [])] if item],
         "view_revisions": [{"id": item.get("id"), "created": item.get("created")} for item in meta.get("tarn_view_history", [])],
-        "current_text": current_view_text(bucket),
+        "current_text": "" if meta.get("merge_content_version") and not include_history else current_view_text(bucket),
         "lifecycle": memory_lifecycle(bucket),
         "lifecycle_label": lifecycle_label(bucket),
         "score": decay_engine.calculate_score(meta),
@@ -8182,7 +8189,7 @@ async def resurface(max_results: int = 1, include_archive: bool = True, max_toke
 # 工具 1.5：read_bucket — 按 ID 精确读桶
 # =============================================================
 @mcp.tool()
-async def read_bucket(bucket_id: str) -> dict:
+async def read_bucket(bucket_id: str, include_history: bool = False) -> dict:
     """按 bucket_id 精确读取完整记忆桶；trace/comment 前先读。只读，不刷新活跃度。"""
     bucket_id = _coerce_memory_id(bucket_id)
     if not bucket_id or not MEMORY_ID_RE.fullmatch(bucket_id):
@@ -8190,7 +8197,20 @@ async def read_bucket(bucket_id: str) -> dict:
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
         return {"error": "not found", "id": bucket_id}
-    return _bucket_read_payload(bucket)
+    requested_id = bucket_id
+    visited = set()
+    while not include_history and bucket['metadata'].get('merged_into'):
+        if bucket['id'] in visited:
+            return {"error": "merge history cycle", "id": requested_id}
+        visited.add(bucket['id'])
+        target = await bucket_mgr.get(bucket['metadata']['merged_into'])
+        if not target:
+            return {"error": "merged target not found", "id": requested_id}
+        bucket = target
+    payload = _bucket_read_payload(bucket, include_history=include_history)
+    if bucket['id'] != requested_id:
+        payload['requested_bucket_id'] = requested_id
+    return payload
 
 
 # =============================================================
@@ -10928,7 +10948,7 @@ async def api_bucket_detail(request):
     bucket = await bucket_mgr.get(bucket_id)
     if not bucket:
         return JSONResponse({"error": "not found"}, status_code=404)
-    return JSONResponse(_bucket_read_payload(bucket))
+    return JSONResponse(_bucket_read_payload(bucket, include_history=True))
 
 
 @mcp.custom_route("/api/moments", methods=["GET"])
@@ -11194,7 +11214,10 @@ async def api_memory_review_detail(request):
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("invalid body")
-        result = await memory_review.decide(pid, body.get("action"))
+        action = body.get("action")
+        if action in {"approve", "edit"} and (type(body.get("draft_version")) is not int or "content" not in body):
+            raise ValueError("请重新打开合并详情，核对最新正文后再操作")
+        result = await memory_review.decide(pid, action, content=body.get("content"), expected_draft_version=body.get("draft_version"))
         if result["status"] in {"approved", "undone"}:
             for bid in (result["target_id"], result["source_id"]):
                 bucket = await bucket_mgr.get(bid)

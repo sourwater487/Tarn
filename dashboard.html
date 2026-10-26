@@ -6463,7 +6463,10 @@ async function showDetail(id) {
     var b = await res.json();
     var meta = b.metadata || {};
     var view = b.metadata_view || {};
-    var comments = Array.isArray(meta.comments) ? meta.comments.slice().reverse() : [];
+    var allComments = Array.isArray(meta.comments) ? meta.comments : [];
+    var comments = allComments.filter(c => c.kind !== 'merge_source').slice().reverse();
+    var mergeOriginals = [...(meta.merge_originals || []), ...allComments.filter(c => c.kind === 'merge_source')];
+    var mergeOriginalsHtml = mergeOriginals.length ? '<details class="detail-comments"><summary>历史原文</summary>' + mergeOriginals.map(c => '<div class="comment-item"><div class="comment-meta">来源 ' + esc(c.source_bucket_id || '') + '</div><div class="comment-body">' + esc(c.content || '') + '</div></div>').join('') + '</details>' : '';
     var commentsHtml = comments.length
       ? '<div class="detail-comments"><h3>年轮</h3>' + comments.map(function(c) {
           var canDelete = c && c.id && c.author === dashboardCommentAuthor && c.source === 'dashboard';
@@ -6551,7 +6554,7 @@ async function showDetail(id) {
         '<h3>Moments</h3>' +
         '<div class="loading">解析 moments…</div>' +
       '</div>' +
-      commentsHtml +
+      commentsHtml + mergeOriginalsHtml +
       commentFormHtml;
     loadBucketMoments(id);
   } catch (e) {

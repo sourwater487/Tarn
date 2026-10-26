@@ -22,6 +22,7 @@
     #memory-review-view .review-result {border:1px solid #85958c;}
     #memory-review-view .review-marker {display:inline-block;width:9px;height:9px;border:1px solid #9b9690;margin-right:9px;}
     #memory-review-view .review-result .review-marker {border-color:#85958c;border-radius:50%;}
+    #memory-review-view textarea {display:block;width:100%;box-sizing:border-box;min-height:240px;resize:vertical;font:inherit;line-height:1.8;color:var(--text);background:transparent;border:1px solid #85958c;border-radius:6px;padding:12px;}
     #memory-review-view pre {white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;line-height:1.7;}
     #memory-review-view details {margin:14px 0;} #memory-review-view summary {cursor:pointer;padding:8px 0;}
     #memory-review-view .review-notice {padding:12px 0;line-height:1.7;} #memory-review-view input {max-width:100%;box-sizing:border-box;}
@@ -42,12 +43,15 @@
   function bucketView(bucket, title, result = false) {
     if (!bucket) return '<article>源桶已不存在</article>';
     const meta = bucket.metadata || {};
+    const rings = (meta.comments || []).filter(r => r.kind !== 'merge_source');
+    const originals = [...(meta.merge_originals || []), ...(meta.comments || []).filter(r => r.kind === 'merge_source')];
     return '<article class="' + (result ? 'review-result' : 'review-source') + '"><div class="review-meta"><span class="review-marker" aria-hidden="true"></span>' + text(title) + '</div><h3>' + text(meta.name || bucket.id) + '</h3>' +
       '<div class="review-meta">' + text(bucket.id) + '</div>' +
-      '<details open><summary>桶正文</summary><pre>' + text(bucket.content) + '</pre></details>' +
+      (result ? '<label for="review-draft">合并后正文 · 可直接编辑</label><textarea id="review-draft" maxlength="50000" spellcheck="false">' + text(bucket.content) + '</textarea>' : '<details open><summary>桶正文</summary><pre>' + text(bucket.content) + '</pre></details>') +
       '<details><summary>状态</summary><pre>' + text(state(bucket)) + '</pre></details>' +
-      '<details open><summary>完整年轮 · ' + (meta.comments || []).length + '</summary>' +
-      [...(meta.comments || [])].reverse().map(r => '<div class="review-meta">' + text(r.created) + ' · ' + text(r.kind) + (r.source_bucket_id ? ' · 来源 ' + text(r.source_bucket_id) : '') + '</div><pre>' + text(r.content) + '</pre>').join('') + '</details></article>';
+      '<details open><summary>完整年轮 · ' + rings.length + '</summary>' +
+      [...rings].reverse().map(r => '<div class="review-meta">' + text(r.created) + ' · ' + text(r.kind) + (r.source_bucket_id ? ' · 来源 ' + text(r.source_bucket_id) : '') + '</div><pre>' + text(r.content) + '</pre>').join('') + '</details>' +
+      (originals.length ? '<details><summary>历史原文 · ' + originals.length + '</summary>' + originals.map(r => '<div class="review-meta">来源 ' + text(r.source_bucket_id) + '</div><pre>' + text(r.content) + '</pre>').join('') + '</details>' : '') + '</article>';
   }
   function error(message) {
     let node = panel.querySelector('[role="alert"]');
@@ -69,6 +73,7 @@
   }
   async function detail(id) {
     selected = id;
+    panel.innerHTML = '<p role="status">正在读取并准备合并正文…</p>';
     try {
       const p = await api('/' + encodeURIComponent(id));
       if (selected !== id) return;
@@ -77,8 +82,8 @@
       panel.innerHTML = '<button data-action="back">← 候选列表</button><h2>' + text(p.names.join(' ⇄ ')) + '</h2><div class="review-meta">' + text(labels[p.status]) + ' · 向量余弦相似度 ' + score(p.similarity) + '</div><p>' + text(p.reason) + '</p>' +
         (pending && p.stale ? '<p role="alert">提交后，源桶的正文、年轮或属性已有变化，旧版本不能直接批准。请按最新内容重新提交，再核对结果。</p>' : '') +
         (p.invalid_reason ? '<p role="status">' + text(p.invalid_reason) + '，此工单已退出审批。</p>' : '') + '<div class="review-columns">' + bucketView(p.buckets[0], '待合并 A · 保留 ID 与状态') + bucketView(p.buckets[1], '待合并 B · 并入 A，原桶退出自动浮现') + '</div>' +
-        (p.preview ? '<h3>合并后预览</h3><p class="review-notice">保留目标桶正文与状态，并入另一桶正文和年轮作为来源。当前情况仅去掉完全相同的条目，不自动判断冲突事实。</p>' + bucketView(p.preview, '最终合并结果 · 保留正文与合并年轮', true) + '<details><summary>当前情况的来源依据</summary><pre>' + text(JSON.stringify(p.preview.metadata.tarn_view.facts, null, 2)) + '</pre></details>' : '') +
-        '<div class="review-toolbar">' + (pending ? (p.stale && p.buckets.every(Boolean) ? '<button data-action="resubmit">按最新内容重新提交并核对</button>' : '') + '<button data-action="approve" '+(p.stale?'disabled':'')+'>批准这个合并结果</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
+        (p.preview ? '<h3>合并后预览</h3><p class="review-notice">可以直接修改下方正文。批准后模型默认读取这份正文与原有年轮；两份旧正文仅保存在历史原文中。</p>' + (p.draft_error ? '<p role="status">' + text(p.draft_error) + '</p>' : '') + bucketView(p.preview, '最终合并结果 · 正文与原有年轮', true) : '') +
+        '<div class="review-toolbar">' + (pending ? (p.stale && p.buckets.every(Boolean) ? '<button data-action="resubmit">按最新内容重新提交并核对</button>' : '') + '<button data-action="edit" '+(p.stale?'disabled':'')+'>保存草稿</button><button data-action="approve" '+(p.stale?'disabled':'')+'>批准并保存</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
     } catch(e) {error(e.message);}
   }
   panel.addEventListener('change', e => {if(e.target.id === 'review-filter') {filter=e.target.value;load();}});
@@ -108,11 +113,16 @@
       finally {busy = false;}
       return;
     }
-    if (!['approve','reject','defer','undo'].includes(action)) return;
+    if (!['approve','edit','reject','defer','undo'].includes(action)) return;
     busy = true;
     panel.querySelectorAll('button').forEach(b => b.disabled = true);
-    try {await api('/' + encodeURIComponent(selected), {action});await detail(selected);}
-    catch(e) {await detail(selected);error(e.message);}
+    const payload = {action};
+    if (['approve','edit'].includes(action)) {
+      payload.content = panel.querySelector('#review-draft')?.value || '';
+      payload.draft_version = currentProposal?.draft_version || 0;
+    }
+    try {await api('/' + encodeURIComponent(selected), payload);await detail(selected);if(action === 'edit') error('草稿已保存，尚未合并。');}
+    catch(e) {panel.querySelectorAll('button').forEach(b => b.disabled = false);error(e.message);}
     finally {busy = false;}
   });
   panel.addEventListener('submit', async e => {

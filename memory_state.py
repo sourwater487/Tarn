@@ -14,6 +14,8 @@ RETENTION = {"kept", "favorite", "archived"}
 def memory_revision(bucket, *, include_state=True):
     meta = bucket.get("metadata", {})
     fields = ["name", "date", "comments"]
+    if meta.get("merge_originals"):
+        fields.append("merge_originals")
     if include_state:
         fields += ["resolved", "digested", "pinned", "protected", "type", "memory_lifecycle", "tarn_conflicts"]
     payload = {"content": bucket.get("content", ""), **{key: meta.get(key) for key in fields}}

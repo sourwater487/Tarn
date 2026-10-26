@@ -1,6 +1,6 @@
 """Old-memory rotation and human-approved, reversible pair merges.
 
-State is separate from bucket timestamps. No model calls or new MCP tools.
+State is separate from bucket timestamps. Reviewed drafts reuse the existing reconciler.
 """
 import asyncio
 import copy
@@ -38,9 +38,11 @@ def fingerprint(bucket):
 
 
 class MemoryReview:
-    def __init__(self, manager, state_dir, embeddings=None):
+    def __init__(self, manager, state_dir, embeddings=None, reconciler=None):
         self.manager = manager
         self.embeddings = embeddings
+        self.reconciler = reconciler
+        self.draft_locks = {}
         self.path = Path(state_dir) / 'memory-review.json'
         self.lock = asyncio.Lock()
         self.recover()
@@ -172,44 +174,78 @@ class MemoryReview:
             self.save(data)
             return p
 
+    async def prepare_draft(self, proposal_id):
+        async with self.draft_locks.setdefault(proposal_id, asyncio.Lock()):
+            p = self.load()['proposals'].get(proposal_id)
+            if not p or p['status'] not in {'pending', 'deferred'} or p.get('draft_content'):
+                return
+            buckets = [await self.manager.get(p[key]) for key in ('target_id', 'source_id')]
+            if any(not b or fingerprint(b) != p['revisions'].get(b['id']) for b in buckets):
+                return
+            generated = None
+            if self.reconciler:
+                try:
+                    generated = await asyncio.wait_for(self.reconciler.propose(
+                        buckets[1], [buckets[0]], fixed_target=buckets[0]['id']), timeout=45)
+                except Exception:
+                    generated = None
+            content = '\n\n'.join(item['text'].strip() for item in (generated or {}).get('facts', [])).strip()
+            # Existing body reflections remain body material; ring reflections stay in rings.
+            for reflection in (generated or {}).get('reflections', []):
+                if any(':body' in ref.get('source_id', '') for ref in reflection.get('evidence', [])):
+                    content += '\n\n' + reflection['text'].strip()
+            async with self.lock:
+                data = self.load()
+                current = data['proposals'].get(proposal_id)
+                fresh = [await self.manager.get(p[key]) for key in ('target_id', 'source_id')]
+                if (not current or current['status'] not in {'pending', 'deferred'}
+                        or current.get('draft_content') or current.get('draft_version', 0) != p.get('draft_version', 0)
+                        or any(not b or fingerprint(b) != p['revisions'].get(b['id']) for b in fresh)):
+                    return
+                if content:
+                    current.update(draft_content=content, draft_version=1, draft_origin='model', draft_updated_at=now())
+                    current.pop('draft_error', None)
+                else:
+                    current['draft_error'] = '整理暂未成功；可以稍后重试，或直接编辑合并正文。'
+                self.save(data)
+
     def preview(self, target, source, proposal):
         merged = copy.deepcopy(target)
         meta = merged['metadata']
-        comments = copy.deepcopy(meta.get('comments') or [])
-        comments.append({'id': 'merge-' + proposal['id'], 'content': source['content'], 'kind': 'merge_source',
-                         'created': source['metadata'].get('created', ''), 'source_bucket_id': source['id'],
-                         'source_id': source['id'] + ':body'})
-        for index, ring in enumerate(source['metadata'].get('comments') or []):
-            if isinstance(ring, dict):
-                comments.append({**ring, 'id': source['id'] + '-' + str(ring.get('id', index)),
-                                 'source_bucket_id': source['id'],
-                                 'source_id': ring.get('source_id') or source['id'] + ':ring:' + str(ring.get('id', index))})
-        meta['updated_at'] = now()
-        meta['comments'] = comments
-        meta['comment_count'] = len(comments)
-        meta['merge_sources'] = list(dict.fromkeys([*(meta.get('merge_sources') or []), source['id']]))
-        facts, reflections, seen = [], [], set()
+        comments, originals = [], []
         for bucket in (target, source):
-            view = current_view(bucket)
-            items = view.get('facts') or [{'text': bucket['content'], 'evidence': [{'source_id': bucket['id'] + ':body', 'quote': bucket['content']}]}]
-            if not view:
-                items = [*items, *[{'text': ring['content'], 'evidence': [{'source_id': ring.get('source_id') or bucket['id'] + ':ring:' + str(ring.get('id', index)), 'quote': ring['content']}]} for index, ring in enumerate(bucket['metadata'].get('comments') or []) if isinstance(ring, dict) and ring.get('content') and ring.get('kind') != 'feel']]
-            for fact in items:
-                text = fact['text'].strip()
-                if text and text not in seen:
-                    facts.append(copy.deepcopy(fact))
-                    seen.add(text)
-            reflections.extend(copy.deepcopy(view.get('reflections') or []))
+            originals.extend(copy.deepcopy(bucket['metadata'].get('merge_originals') or []))
+            originals.append({'id': proposal['id'] + '-' + bucket['id'], 'content': bucket['content'],
+                              'kind': 'merge_source', 'created': bucket['metadata'].get('created', ''),
+                              'source_bucket_id': bucket['id'],
+                              'source_id': bucket['id'] + ':body:' + proposal['id']})
+            for index, ring in enumerate(bucket['metadata'].get('comments') or []):
+                if not isinstance(ring, dict):
+                    continue
+                if ring.get('kind') == 'merge_source':
+                    originals.append(copy.deepcopy(ring))
+                elif bucket['id'] == target['id']:
+                    comments.append(copy.deepcopy(ring))
+                else:
+                    comments.append({**copy.deepcopy(ring), 'id': source['id'] + '-' + str(ring.get('id', index)),
+                                     'source_bucket_id': ring.get('source_bucket_id') or source['id'],
+                                     'source_id': ring.get('source_id') or source['id'] + ':ring:' + str(ring.get('id', index))})
+        merged['content'] = proposal.get('draft_content', '')
+        meta.update(updated_at=now(), comments=comments, comment_count=len(comments),
+                    merge_originals=originals, merge_content_version=1,
+                    merge_sources=list(dict.fromkeys([*(meta.get('merge_sources') or []), source['id']])))
         meta['tarn_view_history'] = [*(meta.get('tarn_view_history') or []), *([meta['tarn_view']] if meta.get('tarn_view') else [])]
-        meta['tarn_view'] = {'id': proposal['id'], 'created': now(), 'facts': facts, 'reflections': reflections,
-                             'state': memory_lifecycle(target), 'relation': 'human_merge', 'reason': proposal['reason'],
-                             'source_revision': memory_revision(merged, include_state=False)}
-        # Target lifecycle remains explicit; the UI displays both states before approval.
+        # Approved body is canonical, with evidence pointing at that exact body, not old drafts.
+        meta['tarn_view'] = {'id': proposal['id'], 'created': now(),
+                            'facts': [{'text': merged['content'], 'evidence': [{'source_id': target['id'] + ':body', 'quote': merged['content']}]}],
+                            'reflections': [], 'state': memory_lifecycle(target), 'relation': 'human_merge',
+                            'reason': proposal['reason'], 'source_revision': memory_revision(merged, include_state=False)}
         merged['current_view_valid'] = True
         return merged
 
     async def detail(self, proposal_id):
         self.listing()
+        await self.prepare_draft(proposal_id)
         data = self.load()
         p = data['proposals'].get(proposal_id)
         if not p:
@@ -225,7 +261,7 @@ class MemoryReview:
                       preview=self.preview(*buckets, p) if all(buckets) and p['status'] in {'pending', 'deferred'} else None)
         return result
 
-    async def decide(self, proposal_id, action):
+    async def decide(self, proposal_id, action, *, content=None, expected_draft_version=None):
         async with self.lock:
             data = self.load()
             p = data['proposals'].get(proposal_id)
@@ -245,11 +281,25 @@ class MemoryReview:
                 p['status'] = {'reject': 'rejected', 'defer': 'deferred'}[action]
                 self.save(data)
                 return p
-            if action != 'approve':
+            if action not in {'approve', 'edit'}:
                 raise ValueError('未知操作')
             buckets = [await self.manager.get(p[key]) for key in ('target_id', 'source_id')]
             if any(not b or not eligible(b) or fingerprint(b) != p['revisions'][b['id']] for b in buckets):
                 raise ValueError('源桶已变化，请重新提交候选并核对预览')
+            if expected_draft_version is not None and expected_draft_version != p.get('draft_version', 0):
+                raise ValueError('草稿已在另一处修改，请重新打开后核对')
+            if content is not None:
+                if not isinstance(content, str) or not content.strip() or len(content) > 50000:
+                    raise ValueError('合并正文不能为空，且不能超过 50000 字符')
+                if content != p.get('draft_content'):
+                    p.update(draft_content=content, draft_version=p.get('draft_version', 0) + 1,
+                             draft_origin='human', draft_updated_at=now())
+                    p.pop('draft_error', None)
+            if not p.get('draft_content'):
+                raise ValueError('请先生成或填写合并正文，再核对批准')
+            if action == 'edit':
+                self.save(data)
+                return p
             target, source = buckets
             merged = self.preview(target, source, p)
             hidden = copy.deepcopy(source)

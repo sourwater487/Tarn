@@ -864,7 +864,7 @@ def bucket_content_for_recall(bucket: dict) -> str:
     if not isinstance(bucket, dict):
         return ""
     from memory_state import current_view_text
-    text = strip_wikilinks(current_view_text(bucket) or str(bucket.get("content") or ""))
+    text = strip_wikilinks(str(bucket.get("content") or "") if bucket.get("metadata", {}).get("merge_content_version") else current_view_text(bucket) or str(bucket.get("content") or ""))
     text = strip_affect_anchor(text)
     return strip_followup_sections(text).strip()
 

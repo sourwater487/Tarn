@@ -4,6 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock
+from types import SimpleNamespace
 
 from bucket_manager import BucketManager
 from memory_review import MemoryReview
@@ -16,12 +17,15 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.manager = BucketManager({'buckets_dir': self.temp.name + '/buckets'})
-        self.review = MemoryReview(self.manager, self.temp.name + '/state')
+        self.generator = SimpleNamespace(propose=AsyncMock(return_value={'facts': [{'text': '最终确定黑龙。'}], 'reflections': []}))
+        self.review = MemoryReview(self.manager, self.temp.name + '/state', reconciler=self.generator)
         self.a = await self.manager.create(content='旧决定：黑猫', name='玩偶', created='2026-01-01T00:00:00+00:00')
         self.b = await self.manager.create(content='后来确定黑龙', name='后续决定', created='2026-02-01T00:00:00+00:00')
 
     async def proposal(self):
-        return await self.review.submit(self.a, self.b, '同一玩偶的后续记录')
+        proposal = await self.review.submit(self.a, self.b, '同一玩偶的后续记录')
+        await self.review.detail(proposal['id'])
+        return self.review.load()['proposals'][proposal['id']]
 
     async def test_trace_merge_uses_actual_module_json_import(self):
         import json
@@ -45,6 +49,89 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.review.load()['proposals'][old['id']]['status'], 'invalidated')
         self.assertFalse((await self.review.detail(fresh['id']))['stale'])
         await self.review.decide(fresh['id'], 'approve')
+
+    async def test_draft_edit_approval_and_model_read_do_not_repeat_old_bodies(self):
+        import re
+        from memory_state import memory_lifecycle, lifecycle_label, current_view_text
+        from utils import bucket_content_for_recall
+        await self.manager.add_comment(self.a, '我记得当时很开心', kind='feel')
+        await self.manager.add_comment(self.b, '我会记住这个决定', kind='feel')
+        p = await self.proposal()
+        before = await self.manager.list_all()
+        draft = '最终正文：确认选择黑龙，还没有购买。'
+        edited = await self.review.decide(p['id'], 'edit', content=draft, expected_draft_version=1)
+        self.assertEqual(before, await self.manager.list_all())
+        self.assertEqual((await self.review.detail(p['id']))['preview']['content'], draft)
+        self.assertEqual(self.generator.propose.await_count, 1)
+        with self.assertRaises(ValueError):
+            await self.review.decide(p['id'], 'approve', content='另一处旧草稿', expected_draft_version=1)
+        await self.review.decide(p['id'], 'approve', content=draft, expected_draft_version=edited['draft_version'])
+        bucket = await self.manager.get(self.a)
+        self.assertEqual(bucket_content_for_recall(bucket), draft)
+        from memory_preview import recent_ring_preview
+        preview = recent_ring_preview(bucket, bucket_content_for_recall(bucket))
+        self.assertIn(draft, preview)
+        self.assertIn('我会记住这个决定', preview)
+        self.assertNotIn('旧决定：黑猫', preview)
+        tree = ast.parse(Path('server.py').read_text())
+        nodes = [n for n in tree.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in {'_bucket_read_payload', 'read_bucket'}]
+        for n in nodes: n.decorator_list = []
+        namespace = {'normalize_memory_metadata': lambda b: {}, 'strip_wikilinks': lambda t: t,
+                     'current_view': current_view, 'current_view_text': current_view_text,
+                     'memory_lifecycle': memory_lifecycle, 'lifecycle_label': lifecycle_label,
+                     'decay_engine': SimpleNamespace(calculate_score=lambda m: 0),
+                     'bucket_mgr': self.manager, '_coerce_memory_id': lambda v: v,
+                     'MEMORY_ID_RE': re.compile(r'^[A-Za-z0-9_.:-]+$')}
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), 'payload-test', 'exec'), namespace)
+        result = await namespace['read_bucket'](self.a)
+        self.assertEqual(result['content'], draft)
+        self.assertEqual(len(result['metadata']['comments']), 2)
+        self.assertNotIn('旧决定：黑猫', str(result))
+        self.assertNotIn('后来确定黑龙', str(result))
+        history = await namespace['read_bucket'](self.a, include_history=True)
+        self.assertEqual(len(history['metadata']['merge_originals']), 2)
+        redirected = await namespace['read_bucket'](self.b)
+        self.assertEqual(redirected['content'], draft)
+        self.assertEqual(redirected['id'], self.a)
+
+    async def test_failed_generation_allows_manual_draft_but_not_empty_approval(self):
+        self.generator.propose.return_value = None
+        p = await self.proposal()
+        self.assertIn('draft_error', p)
+        with self.assertRaises(ValueError):
+            await self.review.decide(p['id'], 'approve')
+        with self.assertRaises(ValueError):
+            await self.review.decide(p['id'], 'edit', content='  ')
+        await self.review.decide(p['id'], 'edit', content='手工整理的正文', expected_draft_version=0)
+        await self.review.decide(p['id'], 'approve', expected_draft_version=1)
+        self.assertEqual((await self.manager.get(self.a))['content'], '手工整理的正文')
+
+    async def test_draft_uses_existing_reconciler_and_grounded_model_output(self):
+        import json
+        from memory_reconciliation import MemoryReconciler
+        value = {'relation': 'progress', 'target_id': self.a, 'reason': '更新选择',
+                 'facts': [{'text': '最终选择黑龙。', 'evidence': [{'source_id': self.b + ':body', 'quote': '后来确定黑龙'}]}],
+                 'reflections': [], 'state': {'validity': 'current', 'progress': 'not_applicable'}}
+        create = AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=json.dumps(value)))]))
+        generator = SimpleNamespace(client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))),
+                                    model='fixture', _completion_options=lambda **kwargs: kwargs)
+        self.review.reconciler = MemoryReconciler(self.manager, lambda: generator)
+        p = await self.proposal()
+        self.assertEqual(p['draft_content'], '最终选择黑龙。')
+        self.assertEqual(create.await_count, 1)
+        material = json.loads(create.call_args.kwargs['messages'][1]['content'])
+        self.assertEqual(material['fixed_target_id'], self.a)
+        self.assertEqual({source['bucket_id'] for source in material['sources']}, {self.a, self.b})
+
+    async def test_generation_discards_result_if_source_changes(self):
+        async def changed(*args, **kwargs):
+            await self.manager.add_comment(self.a, '刚刚新增的心得')
+            return {'facts': [{'text': '过时的整理结果'}]}
+        self.generator.propose.side_effect = changed
+        p = await self.review.submit(self.a, self.b, '同一事件')
+        detail = await self.review.detail(p['id'])
+        self.assertTrue(detail['stale'])
+        self.assertNotIn('draft_content', self.review.load()['proposals'][p['id']])
 
     async def test_rotation_persists_without_touching_buckets(self):
         before = await self.manager.list_all()
@@ -80,10 +167,14 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         expected = detail['preview']
         await self.review.decide(p['id'], 'approve')
         a, b = await self.manager.get(self.a), await self.manager.get(self.b)
-        self.assertEqual(a['content'], '旧决定：黑猫')
+        self.assertEqual(a['content'], '最终确定黑龙。')
         self.assertEqual(b['content'], '后来确定黑龙')
         self.assertEqual(a['metadata']['comments'], expected['metadata']['comments'])
         self.assertTrue(current_view(a))
+        self.assertFalse(any(r.get('kind') == 'merge_source' for r in a['metadata']['comments']))
+        self.assertEqual([r['content'] for r in a['metadata']['merge_originals']], ['旧决定：黑猫', b['content']])
+        from memory_reconciliation import sources_for
+        self.assertFalse(any(r['text'] == '旧决定：黑猫' for r in sources_for(a)))
         self.assertTrue(b['metadata']['digested'])
         self.assertEqual(b['metadata']['merged_into'], self.a)
         self.assertFalse(can_bucket_be_recent_context(b))
@@ -126,7 +217,8 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         p = await self.proposal()
         results = await asyncio.gather(self.review.decide(p['id'], 'approve'), self.review.decide(p['id'], 'approve'), return_exceptions=True)
         self.assertEqual(sum(isinstance(r, ValueError) for r in results), 1)
-        self.assertEqual(len((await self.manager.get(self.a))['metadata']['comments']), 1)
+        self.assertEqual(len((await self.manager.get(self.a))['metadata']['comments']), 0)
+        self.assertEqual(len((await self.manager.get(self.a))['metadata']['merge_originals']), 2)
 
     async def test_restart_recovers_interrupted_transaction(self):
         p = await self.proposal()
