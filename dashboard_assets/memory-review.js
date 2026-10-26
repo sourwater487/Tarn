@@ -79,11 +79,13 @@
       if (selected !== id) return;
       currentProposal = p;
       const pending = ['pending','deferred'].includes(p.status);
+      const ready = pending && !p.stale && Boolean(p.preview?.content?.trim());
       panel.innerHTML = '<button data-action="back">← 候选列表</button><h2>' + text(p.names.join(' ⇄ ')) + '</h2><div class="review-meta">' + text(labels[p.status]) + ' · 向量余弦相似度 ' + score(p.similarity) + '</div><p>' + text(p.reason) + '</p>' +
         (pending && p.stale ? '<p role="alert">提交后，源桶的正文、年轮或属性已有变化，旧版本不能直接批准。请按最新内容重新提交，再核对结果。</p>' : '') +
         (p.invalid_reason ? '<p role="status">' + text(p.invalid_reason) + '，此工单已退出审批。</p>' : '') + '<div class="review-columns">' + bucketView(p.buckets[0], '待合并 A · 保留 ID 与状态') + bucketView(p.buckets[1], '待合并 B · 并入 A，原桶退出自动浮现') + '</div>' +
-        (p.preview ? '<h3>合并后预览</h3><p class="review-notice">可以直接修改下方正文。批准后模型默认读取这份正文与原有年轮；两份旧正文仅保存在历史原文中。</p>' + (p.draft_error ? '<p role="status">' + text(p.draft_error) + '</p>' : '') + bucketView(p.preview, '最终合并结果 · 正文与原有年轮', true) : '') +
-        '<div class="review-toolbar">' + (pending ? (p.stale && p.buckets.every(Boolean) ? '<button data-action="resubmit">按最新内容重新提交并核对</button>' : '') + '<button data-action="edit" '+(p.stale?'disabled':'')+'>保存草稿</button><button data-action="approve" '+(p.stale?'disabled':'')+'>批准并保存</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
+        (ready ? '<h3>合并后预览</h3><p class="review-notice">可以直接修改下方正文。批准后模型默认读取这份正文与原有年轮；两份旧正文仅保存在历史原文中。</p>' + (p.draft_error ? '<p role="status">' + text(p.draft_error) + '</p>' : '') + bucketView(p.preview, '最终合并结果 · 正文与原有年轮', true) : '') +
+        (pending && !ready ? '<p class="review-notice" role="status">' + text(p.stale ? '尚未生成合并正文。请按最新源桶重新生成，再在模型正文上修改。' : p.draft_error || '尚未生成合并正文，请重试生成。') + '</p>' : '') +
+        '<div class="review-toolbar">' + (pending ? (p.stale && p.buckets.every(Boolean) ? '<button data-action="resubmit">按最新内容生成合并正文</button>' : '') + (!p.stale && !ready ? '<button data-action="retry-draft">重新生成合并正文</button>' : '') + '<button data-action="edit" '+(!ready?'disabled':'')+'>保存草稿</button><button data-action="approve" '+(!ready?'disabled':'')+'>批准并保存</button><button data-action="defer">暂缓</button><button data-action="reject">拒绝</button>' : '') + (p.status === 'approved' ? '<button data-action="undo">撤销合并</button>' : '') + '</div>';
     } catch(e) {error(e.message);}
   }
   panel.addEventListener('change', e => {if(e.target.id === 'review-filter') {filter=e.target.value;load();}});
@@ -93,6 +95,7 @@
     if (button.dataset.proposal) return detail(button.dataset.proposal);
     const action = button.dataset.action;
     if (['refresh','back'].includes(action)) return load();
+    if (action === 'retry-draft') return detail(selected);
     if (action === 'scan') {
       busy = true;
       button.disabled = true;

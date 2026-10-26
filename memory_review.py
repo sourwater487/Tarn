@@ -186,7 +186,7 @@ class MemoryReview:
             if self.reconciler:
                 try:
                     generated = await asyncio.wait_for(self.reconciler.propose(
-                        buckets[1], [buckets[0]], fixed_target=buckets[0]['id']), timeout=45)
+                        buckets[1], [buckets[0]], fixed_target=buckets[0]['id'], merge_draft=True), timeout=45)
                 except Exception:
                     generated = None
             content = '\n\n'.join(item['text'].strip() for item in (generated or {}).get('facts', [])).strip()
@@ -206,7 +206,7 @@ class MemoryReview:
                     current.update(draft_content=content, draft_version=1, draft_origin='model', draft_updated_at=now())
                     current.pop('draft_error', None)
                 else:
-                    current['draft_error'] = '整理暂未成功；可以稍后重试，或直接编辑合并正文。'
+                    current['draft_error'] = '模型未能生成合并正文，请重试；尚未产生可审批的合并结果。'
                 self.save(data)
 
     def preview(self, target, source, proposal):
@@ -258,7 +258,7 @@ class MemoryReview:
                 bucket['current_view_valid'] = bool(current_view(bucket))
                 bucket['lifecycle'] = memory_lifecycle(bucket)
         result.update(buckets=buckets, stale=stale,
-                      preview=self.preview(*buckets, p) if all(buckets) and p['status'] in {'pending', 'deferred'} else None)
+                      preview=self.preview(*buckets, p) if all(buckets) and not stale and p.get('draft_content') and p['status'] in {'pending', 'deferred'} else None)
         return result
 
     async def decide(self, proposal_id, action, *, content=None, expected_draft_version=None):

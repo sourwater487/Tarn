@@ -167,7 +167,7 @@ class MemoryReconciler:
         self.generator = generator
         self.lock = asyncio.Lock()
 
-    async def propose(self, incoming, candidates, *, fixed_target=""):
+    async def propose(self, incoming, candidates, *, fixed_target="", merge_draft=False):
         generator = self.generator()
         if not getattr(generator, "client", None):
             return None
@@ -194,7 +194,17 @@ class MemoryReconciler:
             if not response.choices or response.choices[0].finish_reason == "length":
                 return None
             value = json.loads(response.choices[0].message.content or "")
-            return validate_proposal(value, sources, {b["id"] for b in candidates}, incoming["id"], fixed_target)
+            if merge_draft:
+                # Merge drafts preserve reflections from the source verbatim, not model rewrites.
+                # Facts, quotations and lifecycle still pass the full existing validator.
+                value["reflections"] = []
+            result = validate_proposal(value, sources, {b["id"] for b in candidates}, incoming["id"], fixed_target)
+            if merge_draft:
+                result["reflections"] = [
+                    {"text": source["text"], "evidence": [{"source_id": source["source_id"], "quote": source["text"]}]}
+                    for source in sources if source["kind"] == "reflection" and ":body" in source["source_id"]
+                ]
+            return result
         except Exception as exc:
             detail = str(exc) if isinstance(exc, ValueError) else getattr(exc, "code", "")
             logger.warning("Reconciliation skipped: %s %s", type(exc).__name__, detail)

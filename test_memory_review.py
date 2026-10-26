@@ -98,6 +98,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         self.generator.propose.return_value = None
         p = await self.proposal()
         self.assertIn('draft_error', p)
+        self.assertIsNone((await self.review.detail(p['id']))['preview'])
         with self.assertRaises(ValueError):
             await self.review.decide(p['id'], 'approve')
         with self.assertRaises(ValueError):
@@ -111,13 +112,15 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         from memory_reconciliation import MemoryReconciler
         value = {'relation': 'progress', 'target_id': self.a, 'reason': '更新选择',
                  'facts': [{'text': '最终选择黑龙。', 'evidence': [{'source_id': self.b + ':body', 'quote': '后来确定黑龙'}]}],
-                 'reflections': [], 'state': {'validity': 'current', 'progress': 'not_applicable'}}
+                 'reflections': [{'text':'模型改写的反思，不应覆盖原话'}], 'state': {'validity': 'current', 'progress': 'not_applicable'}}
         create = AsyncMock(return_value=SimpleNamespace(choices=[SimpleNamespace(finish_reason='stop', message=SimpleNamespace(content=json.dumps(value)))]))
         generator = SimpleNamespace(client=SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create))),
                                     model='fixture', _completion_options=lambda **kwargs: kwargs)
+        await self.manager.update(self.a, content='旧决定：黑猫\n\n### reflection\n我记得这次挑选。')
         self.review.reconciler = MemoryReconciler(self.manager, lambda: generator)
         p = await self.proposal()
-        self.assertEqual(p['draft_content'], '最终选择黑龙。')
+        self.assertEqual(p['draft_content'], '最终选择黑龙。\n\n我记得这次挑选。')
+        self.assertNotIn('模型改写', p['draft_content'])
         self.assertEqual(create.await_count, 1)
         material = json.loads(create.call_args.kwargs['messages'][1]['content'])
         self.assertEqual(material['fixed_target_id'], self.a)
@@ -131,6 +134,7 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         p = await self.review.submit(self.a, self.b, '同一事件')
         detail = await self.review.detail(p['id'])
         self.assertTrue(detail['stale'])
+        self.assertIsNone(detail['preview'])
         self.assertNotIn('draft_content', self.review.load()['proposals'][p['id']])
 
     async def test_rotation_persists_without_touching_buckets(self):
