@@ -68,6 +68,21 @@ class ReviewTests(unittest.IsolatedAsyncioTestCase):
         await self.review.decide(p['id'], 'undo')
         self.assertEqual(before, {bid: Path(self.manager._find_bucket_file(bid)).read_text() for bid in before})
 
+    async def test_deleted_source_invalidates_pending_and_deferred(self):
+        for deferred in (False, True):
+            source = await self.manager.create(content='待删除源桶')
+            p = await self.review.submit(self.a, source, '重复内容')
+            if deferred:
+                await self.review.decide(p['id'], 'defer')
+            await self.manager.delete(source)
+            item = next(p2 for p2 in self.review.listing()['proposals'] if p2['id'] == p['id'])
+            self.assertEqual(item['status'], 'invalidated')
+            detail = await self.review.detail(p['id'])
+            self.assertIsNone(detail['preview'])
+            with self.assertRaises(ValueError):
+                await self.review.decide(p['id'], 'approve')
+        self.assertIsNotNone(await self.manager.get(self.a))
+
     async def test_changed_sources_block_approval(self):
         p = await self.proposal()
         await self.manager.update(self.a, content='后来又变了')

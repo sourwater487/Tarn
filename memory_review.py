@@ -203,6 +203,7 @@ class MemoryReview:
         return merged
 
     async def detail(self, proposal_id):
+        self.listing()
         data = self.load()
         p = data['proposals'].get(proposal_id)
         if not p:
@@ -287,6 +288,15 @@ class MemoryReview:
 
     def listing(self):
         data = self.load()
+        changed = False
+        for p in data['proposals'].values():
+            if p['status'] in {'pending', 'deferred'} and any(
+                not self.manager._find_bucket_file(p[key]) for key in ('target_id', 'source_id')
+            ):
+                p.update(status='invalidated', invalid_reason='源桶已删除', decided_at=now())
+                changed = True
+        if changed:
+            self.save(data)
         return {'reviewed_count': len(data['seen']), 'proposals': [
             {k: v for k, v in p.items() if k not in {'originals', 'after_revisions'}}
             for p in sorted(data['proposals'].values(), key=lambda p: p['created'], reverse=True)]}

@@ -3430,7 +3430,7 @@
     <p style="color:var(--text-dim);font-size:12px;">Operit 备份会先按条目写入 content 原文与 embedding，再由限流队列逐条打标；模型不会改写正文。</p>
 
     <div id="import-upload-zone" style="border:2px dashed var(--border);border-radius:16px;padding:40px;text-align:center;cursor:pointer;margin:20px 0;transition:border-color .2s;">
-      <div style="font-size:32px;margin-bottom:8px;">📁</div>
+      <div style="font-size:32px;margin-bottom:8px;">▱</div>
       <div>拖拽文件到此处，或 <span style="color:var(--accent);text-decoration:underline;">点击选择</span></div>
       <input type="file" id="import-file-input" accept=".json,.txt,.md,.jsonl" style="display:none" />
     </div>
@@ -3487,7 +3487,7 @@
     <hr style="border-color:var(--border);margin:24px 0;" />
 
     <h3>高频模式检测</h3>
-    <button onclick="detectPatterns()">🔍 检测高频模式</button>
+    <button onclick="detectPatterns()">⌕ 检测高频模式</button>
     <div id="import-patterns" style="margin-top:16px;"></div>
   </div>
 </div>
@@ -5993,7 +5993,7 @@ function renderWordMapEdges(edges) {
   }
   el.innerHTML = edges.map(function(edge) {
     return '<div class="word-map-card">' +
-      '<strong>' + esc(edge.term_a || '') + ' ↔ ' + esc(edge.term_b || '') + '</strong>' +
+      '<strong>' + esc(edge.term_a || '') + ' ⇄ ' + esc(edge.term_b || '') + '</strong>' +
       '<div>buckets ' + esc(edge.bucket_count || 0) + ' · weight ' + esc(Number(edge.weight || 0).toFixed(2)) + '</div>' +
     '</div>';
   }).join('');
@@ -6045,13 +6045,13 @@ function buildFilters() {
   const filters = document.getElementById('filters');
   const legacyViewFilters = [
     { key: 'all', label: '全部' },
-    { key: 'pinned', label: '📌 钉选' },
-    { key: 'anchor', label: '⚓ Anchor' },
+    { key: 'pinned', label: '◇ 钉选' },
+    { key: 'anchor', label: '⊙ Anchor' },
     { key: 'feel', label: 'Feel' },
     { key: 'daily_impression', label: '日印象' },
     { key: 'unresolved', label: '⚡ 可浮现' },
-    { key: 'digested', label: '🌿 已消化' },
-    { key: 'archived', label: '📦 归档' },
+    { key: 'digested', label: '⌁ 已消化' },
+    { key: 'archived', label: '▣ 归档' },
     { key: 'tag:self_anchor', label: '自我' },
   ];
   const visibleFilters = legacyViewFilters.map(function(item) { return item.key; });
@@ -6377,7 +6377,7 @@ function renderBuckets(buckets) {
   }
   list.innerHTML = sortedBuckets.map(function(b) {
     var id = String(b.id || '');
-    var icon = b.anchor ? '⚓' : b.pinned ? '📌' : b.type === 'feel' ? '🫧' : b.digested ? '🌿' : b.resolved ? '💤' : '💭';
+    var icon = b.anchor ? '⊙' : b.pinned ? '◇' : b.type === 'feel' ? '○' : b.digested ? '⌁' : b.resolved ? '−' : '·';
     var vPos = Math.round(b.valence * 100);
     var modelV = b.model_valence != null ? ' → V' + b.model_valence.toFixed(1) : '';
     var timeAgo = formatTimeAgo(b.created || b.last_active);
@@ -7749,7 +7749,7 @@ async function runBreathDebug() {
     results.innerHTML = data.results.map(function(r, i) {
       var s = r.scores;
       var passed = r.passed_threshold;
-      var icon = r.anchor ? '⚓' : r.pinned ? '📌' : r.resolved ? '💤' : r.type === 'feel' ? '🫧' : '💭';
+      var icon = r.anchor ? '⊙' : r.pinned ? '◇' : r.resolved ? '−' : r.type === 'feel' ? '○' : '·';
       var bars = Object.entries(s).map(function(entry) {
         var key = entry[0], val = entry[1];
         var pct = Math.round(val * 100);
@@ -9103,10 +9103,10 @@ async function loadImportResults() {
         <p style="font-size:13px;margin:6px 0;white-space:pre-wrap;">${esc(b.content)}</p>
         <div style="font-size:11px;color:var(--text-dim);margin-bottom:6px;">${esc((b.tags||[]).map(t=>'#'+t).join(' '))}</div>
         <div style="display:flex;gap:8px;">
-          <button onclick="reviewAction('${safeId}','pin')" title="固定为永久记忆">📌 固定</button>
-          <button onclick="reviewAction('${safeId}','anchor')" title="标为长期锚点">⚓ Anchor</button>
+          <button onclick="reviewAction('${safeId}','pin')" title="固定为永久记忆">◇ 固定</button>
+          <button onclick="reviewAction('${safeId}','anchor')" title="标为长期锚点">⊙ Anchor</button>
           <button onclick="reviewAction('${safeId}','important')" title="标为重要">⭐ 重要</button>
-          <button onclick="reviewAction('${safeId}','noise')" title="标为噪声并resolve">🗑 噪声</button>
+          <button onclick="reviewAction('${safeId}','noise')" title="标为噪声并resolve">× 噪声</button>
           <button onclick="if(confirm('确定删除？'))reviewAction('${safeId}','delete')" title="彻底删除" style="color:var(--negative);">✕ 删除</button>
         </div>
       </div>
@@ -9135,10 +9135,10 @@ async function detectPatterns() {
         </div>
         <p style="font-size:13px;margin:6px 0;">${esc(p.pattern_content)}</p>
         <div style="display:flex;gap:8px;">
-          <button onclick="reviewAction('${firstId}','pin')">📌 固定</button>
-          <button onclick="reviewAction('${firstId}','anchor')">⚓ Anchor</button>
+          <button onclick="reviewAction('${firstId}','pin')">◇ 固定</button>
+          <button onclick="reviewAction('${firstId}','anchor')">⊙ Anchor</button>
           <button onclick="reviewAction('${firstId}','important')">⭐ 重要</button>
-          <button onclick="batchReview('${idsJson}','noise')">🗑 噪声</button>
+          <button onclick="batchReview('${idsJson}','noise')">× 噪声</button>
         </div>
       </div>
     `;
